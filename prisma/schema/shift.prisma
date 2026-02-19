@@ -1,0 +1,6 @@
+model Shift {
+  id   Int    @id @default(autoincrement())
+  name String @unique
+
+  semesters Semester[]
+}

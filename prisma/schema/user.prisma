@@ -1,0 +1,89 @@
+model user {
+  id         String   @id @default(uuid())
+  email      String   @unique
+  password   String
+  needPassChange Boolean @default(true)
+  status    UserStatus @default(ACTIVE)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  lastLogin DateTime?
+
+  student   Student?
+  teacher   Teacher?
+  admin     Admin?
+  cr        Cr? @relation("CRUserRelation")
+  attendanceTaken AttendanceSession[] @relation("AttendanceTaken")
+
+  @@map("user")
+}
+
+
+model Student {
+  id               Int    @id @default(autoincrement())
+  name             String
+  email            String  @unique
+  roll             String  @unique
+  registration     String  @unique
+  mobile           String  @unique
+  gender           String
+  birthDate        DateTime
+  birthnumber      String
+  nid              String? @unique
+  fatherName       String
+  motherName       String
+  fatherMobile     String
+  motherMobile     String
+  presentAddress   String
+  permanentAddress String
+  session          String
+  profilePhoto     String?
+  userId           String  @unique
+  groupId          Int
+  departmentId     Int
+  isDeleted        Boolean @default(false)
+
+  user        user        @relation(fields: [userId], references: [id])
+  group       Group       @relation(fields: [groupId], references: [id])
+  department  Department  @relation(fields: [departmentId], references: [id])
+
+  attendanceRecords AttendanceRecord[]
+
+}
+
+
+model Teacher {
+  id               Int    @id @default(autoincrement())
+  name             String
+  email            String  @unique
+  mobile           String
+  gender           String
+  birthDate        DateTime
+  birthnumber      String
+  nid              String? @unique
+  presentAddress   String
+  permanentAddress String
+  profilePhoto     String?
+  bio              String?
+  expertise        String?
+  userId           String  @unique
+
+  user user @relation(fields: [userId], references: [id])
+
+  subjectGroups SubjectGroup[]
+}
+
+model Admin {
+  id        Int    @id @default(autoincrement())
+  userId    String @unique
+  user      user   @relation(fields: [userId], references: [id])
+  roleLabel String // Super Admin, Sub Admin
+  lastLogin DateTime?
+}
+
+model Cr {
+  id       Int    @id @default(autoincrement())
+  userId   String @unique
+  user     user   @relation(fields: [userId], references: [id], name: "CRUserRelation")
+  groupId  Int    @unique
+  group    Group  @relation(fields: [groupId], references: [id], name: "CRGroupRelation")
+}

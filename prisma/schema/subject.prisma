@@ -1,0 +1,21 @@
+model Subject {
+  id            Int            @id @default(autoincrement())
+  name          String
+  code          String         @unique
+  subjectGroups SubjectGroup[]
+}
+
+
+model SubjectGroup {
+  id        Int     @id @default(autoincrement())
+  subjectId Int
+  groupId   Int
+  teacherId Int?
+
+  subject Subject @relation(fields: [subjectId], references: [id])
+  group   Group   @relation(fields: [groupId], references: [id])
+  teacher Teacher? @relation(fields: [teacherId], references: [id])
+
+  attendanceSessions AttendanceSession[]
+
+}

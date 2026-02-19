@@ -1,0 +1,12 @@
+enum Role {
+  STUDENT
+  TEACHER
+  CR
+  ADMIN
+}
+  
+enum UserStatus {
+  ACTIVE
+  INACTIVE
+  BANNED
+}

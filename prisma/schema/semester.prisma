@@ -1,0 +1,14 @@
+model Semester {
+  id           Int    @id @default(autoincrement())
+  semesterNo   Int
+  departmentId Int
+  shiftId      Int
+
+  department Department @relation(fields: [departmentId], references: [id])
+  shift      Shift      @relation(fields: [shiftId], references: [id])
+
+  groups   Group[]
+
+
+  @@unique([departmentId, shiftId, semesterNo])
+}

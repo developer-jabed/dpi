@@ -1,0 +1,28 @@
+model AttendanceSession {
+  id             Int      @id @default(autoincrement())
+  subjectGroupId Int
+  groupId        Int
+  date           DateTime @db.Date
+  takenById      String   
+
+  subjectGroup SubjectGroup @relation(fields: [subjectGroupId], references: [id])
+  group        Group        @relation(fields: [groupId], references: [id])
+  takenBy      user         @relation("AttendanceTaken", fields: [takenById], references: [id])
+
+  records AttendanceRecord[]
+
+  @@unique([subjectGroupId, date])
+}
+
+
+model AttendanceRecord {
+  id         Int @id @default(autoincrement())
+  sessionId  Int
+  studentId  Int
+  present    Boolean
+
+  session AttendanceSession @relation(fields: [sessionId], references: [id])
+  student Student           @relation(fields: [studentId], references: [id])
+
+  @@unique([sessionId, studentId])
+}
