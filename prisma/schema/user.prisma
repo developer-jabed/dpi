@@ -41,8 +41,6 @@ model Student {
   groupId          Int
   departmentId     Int
   isDeleted        Boolean @default(false)
-
-  // Foreign key side — onDelete only here
   user        user        @relation(fields: [userId], references: [id], onDelete: Cascade)
   group       Group       @relation(fields: [groupId], references: [id])
   department  Department  @relation(fields: [departmentId], references: [id])
@@ -66,7 +64,6 @@ model Teacher {
   expertise        String?
   userId           String  @unique
 
-  // Foreign key side — onDelete only here
   user user @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   subjectGroups SubjectGroup[]
@@ -75,7 +72,6 @@ model Teacher {
 model Admin {
   id        Int    @id @default(autoincrement())
   userId    String @unique
-  // Foreign key side — onDelete only here
   user      user   @relation(fields: [userId], references: [id], onDelete: Cascade)
   roleLabel String // Super Admin, Sub Admin
   lastLogin DateTime?
@@ -84,7 +80,6 @@ model Admin {
 model Cr {
   id       Int    @id @default(autoincrement())
   userId   String @unique
-  // Foreign key side — onDelete only here
   user     user   @relation(fields: [userId], references: [id], onDelete: Cascade, name: "CRUserRelation")
   groupId  Int    @unique
   group    Group  @relation(fields: [groupId], references: [id], name: "CRGroupRelation")

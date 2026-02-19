@@ -9,7 +9,7 @@ import { userSearchAbleFields } from "./user.constant";
 import { Role, UserStatus, Prisma } from "@prisma/client";
 
 export const userService = {
-  // ========== CREATE ADMIN ==========
+
   createAdmin: async (req: Request) => {
     const file = req.file;
     if (file) {
@@ -31,7 +31,7 @@ export const userService = {
     });
   },
 
-  // ========== CREATE CR ==========
+
   createCR: async (req: Request) => {
     const file = req.file;
     if (file) {

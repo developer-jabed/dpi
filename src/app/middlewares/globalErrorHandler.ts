@@ -29,6 +29,12 @@ const globalErrorHandler = (err: any, req: Request, res: Response, next: NextFun
             statusCode= httpStatus.BAD_REQUEST
 
         }
+        if(err.code === "P2023"){
+            message = "Prisma Type Mismatch Error",
+            error = err.meta
+            statusCode= httpStatus.CONFLICT
+
+        }
         
     }
 
