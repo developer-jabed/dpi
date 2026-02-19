@@ -1,22 +1,22 @@
 model user {
-  id         String   @id @default(uuid())
-  email      String   @unique
-  password   String
-  needPassChange Boolean @default(true)
-  status    UserStatus @default(ACTIVE)
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
-  lastLogin DateTime?
+  id             String   @id @default(uuid())
+  email          String   @unique
+  password       String
+  role           Role     @default(STUDENT)
+  needPassChange Boolean  @default(true)
+  status         UserStatus @default(ACTIVE)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+  lastLogin      DateTime?
 
-  student   Student?
-  teacher   Teacher?
-  admin     Admin?
-  cr        Cr? @relation("CRUserRelation")
+  student        Student?
+  teacher        Teacher?
+  admin          Admin?
+  cr             Cr?      @relation("CRUserRelation")
   attendanceTaken AttendanceSession[] @relation("AttendanceTaken")
 
   @@map("user")
 }
-
 
 model Student {
   id               Int    @id @default(autoincrement())
@@ -42,14 +42,13 @@ model Student {
   departmentId     Int
   isDeleted        Boolean @default(false)
 
-  user        user        @relation(fields: [userId], references: [id])
+  // Foreign key side — onDelete only here
+  user        user        @relation(fields: [userId], references: [id], onDelete: Cascade)
   group       Group       @relation(fields: [groupId], references: [id])
   department  Department  @relation(fields: [departmentId], references: [id])
 
   attendanceRecords AttendanceRecord[]
-
 }
-
 
 model Teacher {
   id               Int    @id @default(autoincrement())
@@ -67,7 +66,8 @@ model Teacher {
   expertise        String?
   userId           String  @unique
 
-  user user @relation(fields: [userId], references: [id])
+  // Foreign key side — onDelete only here
+  user user @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   subjectGroups SubjectGroup[]
 }
@@ -75,7 +75,8 @@ model Teacher {
 model Admin {
   id        Int    @id @default(autoincrement())
   userId    String @unique
-  user      user   @relation(fields: [userId], references: [id])
+  // Foreign key side — onDelete only here
+  user      user   @relation(fields: [userId], references: [id], onDelete: Cascade)
   roleLabel String // Super Admin, Sub Admin
   lastLogin DateTime?
 }
@@ -83,7 +84,8 @@ model Admin {
 model Cr {
   id       Int    @id @default(autoincrement())
   userId   String @unique
-  user     user   @relation(fields: [userId], references: [id], name: "CRUserRelation")
+  // Foreign key side — onDelete only here
+  user     user   @relation(fields: [userId], references: [id], onDelete: Cascade, name: "CRUserRelation")
   groupId  Int    @unique
   group    Group  @relation(fields: [groupId], references: [id], name: "CRGroupRelation")
 }

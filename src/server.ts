@@ -1,15 +1,16 @@
 import { Server } from 'http';
 import app from './app';
 import config from './config';
+import { seedAdmin } from './app/helper/seedAdmin';
 
 async function bootstrap() {
   let server: Server;
 
   try {
-    // ✅ Step 1: Seed the Admin before server starts
-    // await seedAdmin();
 
-    // ✅ Step 2: Start the server
+    await seedAdmin();
+
+ 
     server = app.listen(config.port, () => {
       console.log(`🚀 Server is running on http://localhost:${config.port}`);
     });

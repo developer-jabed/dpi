@@ -1,165 +1,134 @@
 import { prisma } from "../../shared/prisma";
-import { fileUploader } from "../../helper/fileUploader";
-import bcrypt from "bcryptjs";
 import { Request } from "express";
+import * as bcrypt from 'bcryptjs';
+import config from "../../../config";
+import { fileUploader } from "../../helper/fileUploader";
+import { IPaginationOptions } from "../../interfaces/pagination";
+import { paginationHelper } from "../../helper/paginationHelper";
+import { userSearchAbleFields } from "./user.constant";
+import { Role, UserStatus, Prisma } from "@prisma/client";
 
 export const userService = {
-
-  createStudent: async (req: Request) => {
-    const {
-      name,
-      email,
-      password,
-      roll,
-      registration,
-      mobile,
-      gender,
-      birthDate,
-      birthnumber,
-      nid,
-      fatherName,
-      motherName,
-      fatherMobile,
-      motherMobile,
-      presentAddress,
-      permanentAddress,
-      session,
-      groupId,
-      departmentId,
-    } = req.body;
-
-    if (!name || !email || !password) throw new Error("Name, email, and password are required");
-
-    const normalizedEmail = email.trim().toLowerCase();
-
-    const existingUser = await prisma.user.findUnique({ where: { email: normalizedEmail } });
-    if (existingUser) throw new Error("User with this email already exists");
-
-    const hashedPassword = await bcrypt.hash(password, 10);
-
-    let profilePhoto: string | null = null;
-    if (req.file) {
-      const uploadResult = await fileUploader.uploadToCloudinary(req.file);
-      profilePhoto = uploadResult?.secure_url || null;
+  // ========== CREATE ADMIN ==========
+  createAdmin: async (req: Request) => {
+    const file = req.file;
+    if (file) {
+      const uploaded = await fileUploader.uploadToCloudinary(file);
+      req.body.admin.profilePhoto = uploaded?.secure_url;
     }
 
-    const user = await prisma.user.create({
-      data: {
-        email: normalizedEmail,
-        password: hashedPassword,
-        needPassChange: true,
-        student: {
-          create: {
-            name,
-            email: normalizedEmail,
-            roll,
-            registration,
-            mobile,
-            gender,
-            birthDate: new Date(birthDate),
-            birthnumber,
-            nid,
-            fatherName,
-            motherName,
-            fatherMobile,
-            motherMobile,
-            presentAddress,
-            permanentAddress,
-            session,
-            profilePhoto,
-            groupId: Number(groupId),
-            departmentId: Number(departmentId),
-          },
-        },
-      },
-      include: { student: true },
-    });
+    const hashedPassword = await bcrypt.hash(req.body.password, Number(config.salt_round));
 
-    return user;
+    const userData = {
+      email: req.body.admin.email.toLowerCase(),
+      password: hashedPassword,
+      role: Role.ADMIN,
+    };
+
+    return await prisma.$transaction(async tx => {
+      await tx.user.create({ data: userData });
+      return tx.admin.create({ data: req.body.admin });
+    });
   },
 
+  // ========== CREATE CR ==========
+  createCR: async (req: Request) => {
+    const file = req.file;
+    if (file) {
+      const uploaded = await fileUploader.uploadToCloudinary(file);
+      req.body.cr.profilePhoto = uploaded?.secure_url;
+    }
+
+    const hashedPassword = await bcrypt.hash(req.body.password, Number(config.salt_round));
+    const userData = { email: req.body.cr.email.toLowerCase(), password: hashedPassword, role: Role.CR };
+
+    return await prisma.$transaction(async tx => {
+      await tx.user.create({ data: userData });
+      return tx.cr.create({ data: req.body.cr });
+    });
+  },
+
+  // ========== CREATE TEACHER ==========
   createTeacher: async (req: Request) => {
-    const {
-      name,
-      email,
-      password,
-      mobile,
-      gender,
-      birthDate,
-      birthnumber,
-      nid,
-      presentAddress,
-      permanentAddress,
-      bio,
-      expertise,
-    } = req.body;
-
-    if (!name || !email || !password) throw new Error("Name, email, and password are required");
-
-    const normalizedEmail = email.trim().toLowerCase();
-    const existingUser = await prisma.user.findUnique({ where: { email: normalizedEmail } });
-    if (existingUser) throw new Error("User with this email already exists");
-
-    const hashedPassword = await bcrypt.hash(password, 10);
-
-    let profilePhoto: string | null = null;
-    if (req.file) {
-      const uploadResult = await fileUploader.uploadToCloudinary(req.file);
-      profilePhoto = uploadResult?.secure_url || null;
+    const file = req.file;
+    if (file) {
+      const uploaded = await fileUploader.uploadToCloudinary(file);
+      req.body.teacher.profilePhoto = uploaded?.secure_url;
     }
 
-    const user = await prisma.user.create({
-      data: {
-        email: normalizedEmail,
-        password: hashedPassword,
-        needPassChange: true,
-        teacher: {
-          create: {
-            name,
-            email: normalizedEmail,
-            mobile,
-            gender,
-            birthDate: new Date(birthDate),
-            birthnumber,
-            nid,
-            presentAddress,
-            permanentAddress,
-            bio,
-            expertise,
-            profilePhoto,
-          },
-        },
-      },
-      include: { teacher: true },
-    });
+    const hashedPassword = await bcrypt.hash(req.body.password, Number(config.salt_round));
+    const userData = { email: req.body.teacher.email.toLowerCase(), password: hashedPassword, role: Role.TEACHER };
 
-    return user;
+    return await prisma.$transaction(async tx => {
+      await tx.user.create({ data: userData });
+      return tx.teacher.create({ data: req.body.teacher });
+    });
   },
 
-
-  updateProfile: async (req: Request) => {
-    const userId = req.params.id;
-    const { email, password, ...otherFields } = req.body;
-
-    let profilePhoto: string | null = req.body.profilePhoto || null;
-    if (req.file) {
-      const uploadResult = await fileUploader.uploadToCloudinary(req.file);
-      profilePhoto = uploadResult?.secure_url || profilePhoto;
+  // ========== CREATE STUDENT ==========
+  createStudent: async (req: Request) => {
+    const file = req.file;
+    if (file) {
+      const uploaded = await fileUploader.uploadToCloudinary(file);
+      req.body.student.profilePhoto = uploaded?.secure_url;
     }
 
-    const hashedPassword = password ? await bcrypt.hash(password, 10) : undefined;
+    const hashedPassword = await bcrypt.hash(req.body.password, Number(config.salt_round));
+    const userData = { email: req.body.student.email.toLowerCase(), password: hashedPassword, role: Role.STUDENT };
 
-    const updatedUser = await prisma.user.update({
+    return await prisma.$transaction(async tx => {
+      await tx.user.create({ data: userData });
+      return tx.student.create({ data: req.body.student });
+    });
+  },
+
+  // ========== GET ALL USERS ==========
+  getAllFromDB: async (params: any, options: IPaginationOptions) => {
+    const { page, limit, skip } = paginationHelper.calculatePagination(options);
+    const { searchTerm, ...filterData } = params;
+
+    const andConditions: Prisma.userWhereInput[] = [];
+    if (searchTerm) {
+      andConditions.push({
+        OR: userSearchAbleFields.map(field => ({ [field]: { contains: searchTerm, mode: 'insensitive' } }))
+      });
+    }
+    if (Object.keys(filterData).length > 0) {
+      andConditions.push({
+        AND: Object.keys(filterData).map(key => ({ [key]: { equals: filterData[key] } }))
+      });
+    }
+    const whereConditions: Prisma.userWhereInput = andConditions.length ? { AND: andConditions } : {};
+
+    const data = await prisma.user.findMany({
+      where: whereConditions,
+      skip,
+      take: limit,
+      orderBy: options.sortBy && options.sortOrder ? { [options.sortBy]: options.sortOrder } : { createdAt: 'desc' },
+      include: { admin: true, cr: true, teacher: true, student: true },
+    });
+
+    const total = await prisma.user.count({ where: whereConditions });
+    return { meta: { page, limit, total }, data };
+  },
+
+  // ========== UPDATE PROFILE ==========
+  updateProfile: async (userId: string, req: Request) => {
+    const file = req.file;
+    if (file) req.body.profilePhoto = (await fileUploader.uploadToCloudinary(file))?.secure_url;
+    const hashedPassword = req.body.password ? await bcrypt.hash(req.body.password, Number(config.salt_round)) : undefined;
+
+    return prisma.user.update({
       where: { id: userId },
       data: {
-        email: email?.toLowerCase(),
+        email: req.body.email?.toLowerCase(),
         password: hashedPassword,
-        student: otherFields.student ? { update: { ...otherFields.student, profilePhoto } } : undefined,
-        teacher: otherFields.teacher ? { update: { ...otherFields.teacher, profilePhoto } } : undefined,
+        admin: req.body.admin ? { update: req.body.admin } : undefined,
+        cr: req.body.cr ? { update: req.body.cr } : undefined,
+        teacher: req.body.teacher ? { update: req.body.teacher } : undefined,
+        student: req.body.student ? { update: req.body.student } : undefined,
       },
-      include: { student: true, teacher: true },
+      include: { admin: true, cr: true, teacher: true, student: true },
     });
-
-    return updatedUser;
   },
 };
