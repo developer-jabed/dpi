@@ -1,0 +1,25 @@
+import express from 'express';
+import { subjectController } from './subject.controller';
+
+
+const router = express.Router();
+
+router.post(
+  '/',
+
+  subjectController.createSubject
+);
+
+router.get('/', subjectController.getAllSubjects);
+
+router.get('/:id', subjectController.getSingleSubject);
+
+router.patch(
+  '/:id',
+
+  subjectController.updateSubject
+);
+
+
+
+export const subjectRoutes = router;

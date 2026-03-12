@@ -1,75 +1,101 @@
-import express, { Request, Response, NextFunction } from 'express';
+import {  Router } from 'express';
 import { userController } from './user.controller';
 import { fileUploader } from '../../helper/fileUploader';
 
-const router = express.Router();
 
-// Create Admin
+const router = Router();
+
+
 router.post(
   "/create-admin",
-  fileUploader.upload.single('file'),
-  (req: Request, res: Response, next: NextFunction) => {
-    if (req.body.data) {
-      req.body = JSON.parse(req.body.data); // parse incoming JSON
-    }
-    return userController.createAdmin(req, res, next);
-  }
-);
+  fileUploader.upload.single("file"),
+  (req, res, next) => {
+    try {
 
-// Create CR
+      if (req.body.data) {
+        req.body = JSON.parse(req.body.data)
+      }
+
+      return userController.createAdmin(req, res, next)
+
+    } catch (error) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid JSON format"
+      })
+    }
+  }
+)
 router.post(
   "/create-cr",
-  fileUploader.upload.single('file'),
-  (req: Request, res: Response, next: NextFunction) => {
-    if (req.body.data) {
-      req.body = JSON.parse(req.body.data);
-    }
-    return userController.createCR(req, res, next);
-  }
-);
+  fileUploader.upload.single("file"),
+  (req, res, next) => {
+    try {
 
-// Create Teacher
-router.post(
-  "/create-teacher",
-  fileUploader.upload.single('file'),
-  (req: Request, res: Response, next: NextFunction) => {
-    if (req.body.data) {
-      req.body = JSON.parse(req.body.data);
-    }
-    return userController.createTeacher(req, res, next);
-  }
-);
+      if (req.body.data) {
+        req.body = JSON.parse(req.body.data)
+      }
 
-// Create Student
+      return userController.createCR(req, res, next)
+
+    } catch (error) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid JSON format"
+      })
+    }
+  }
+)
 router.post(
   "/create-student",
-  fileUploader.upload.single('file'),
-  (req: Request, res: Response, next: NextFunction) => {
-    if (req.body.data) {
-      req.body = JSON.parse(req.body.data);
+  fileUploader.upload.single("file"),
+  (req, res, next) => {
+    try {
+
+      if (req.body.data) {
+        req.body = JSON.parse(req.body.data)
+      }
+
+      return userController.createStudent(req, res, next)
+
+    } catch (error) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid JSON format"
+      })
     }
-    return userController.createStudent(req, res, next);
   }
-);
+)
 
-// Get All Users
-router.get(
-  "/",
-  (req: Request, res: Response, next: NextFunction) => {
-    return userController.getAllFromDB(req, res, next);
+router.post(
+  "/create-teacher",
+  fileUploader.upload.single("file"),
+  (req, res, next) => {
+    try {
+
+      if (req.body.data) {
+        req.body = JSON.parse(req.body.data)
+      }
+
+      return userController.createTeacher(req, res, next)
+
+    } catch (error) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid JSON format"
+      })
+    }
   }
-);
+)
 
-// Update Profile
-// router.patch(
-//   "/update-profile/:id",
-//   fileUploader.upload.single('file'),
-//   (req: Request, res: Response, next: NextFunction) => {
-//     if (req.body.data) {
-//       req.body = JSON.parse(req.body.data);
-//     }
-//     return userController.updateProfile(req, res, next);
-//   }
-// );
+
+
+
+
+
+
+
+
+
 
 export const userRoutes = router;

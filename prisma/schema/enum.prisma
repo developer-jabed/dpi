@@ -4,7 +4,7 @@ enum Role {
   CR
   ADMIN
 }
-  
+
 enum UserStatus {
   ACTIVE
   INACTIVE

@@ -1,6 +1,16 @@
-import { UserRole } from "@prisma/client";
+// src/types/express/index.d.ts
 
-export type IJWTPayload = {
-    email: string;
-    role: UserRole;
+import { Role, UserStatus } from '@prisma/client';
+
+declare global {
+  namespace Express {
+    interface Request {
+      user?: {
+        id: string;
+        email: string;
+        role: Role;
+        status: UserStatus;
+      };
+    }
+  }
 }

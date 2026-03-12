@@ -8,47 +8,63 @@ const globalErrorHandler = (err: any, req: Request, res: Response, next: NextFun
     let success = false;
     let message = err.message || "Something went wrong!";
     let error = err;
+    if (err.statusCode === 400 && err.type === 'entity.parse.failed') {
+        return res.status(400).json({
+            statusCode: 400,
+            success: false,
+            message: 'Invalid request format. Use form-data for file uploads.',
+        });
+    }
+
+    if (err.name === 'MulterError') {
+        return res.status(400).json({
+            statusCode: 400,
+            success: false,
+            message: 'File upload error: ' + err.message,
+        });
+    }
 
 
-    if (err instanceof Prisma.PrismaClientKnownRequestError){
-        if(err.code === "P2002"){
+    if (err instanceof Prisma.PrismaClientKnownRequestError) {
+        if (err.code === "P2002") {
             message = "User duplication  , user already exist ",
-            error = err.meta,
-            statusCode= httpStatus.CONFLICT
+                error = err.meta,
+                statusCode = httpStatus.CONFLICT
 
         }
-        if(err.code === "P1000"){
+        if (err.code === "P1000") {
             message = "Authentication failed against database server",
-            error = err.meta
-            statusCode= httpStatus.BAD_GATEWAY
+                error = err.meta
+            statusCode = httpStatus.BAD_GATEWAY
 
         }
-        if(err.code === "P2003"){
+        if (err.code === "P2003") {
             message = "Foreign key constraint failed",
-            error = err.meta
-            statusCode= httpStatus.BAD_REQUEST
+                error = err.meta
+            statusCode = httpStatus.BAD_REQUEST
 
         }
-        if(err.code === "P2023"){
+        if (err.code === "P2023") {
             message = "Prisma Type Mismatch Error",
-            error = err.meta
-            statusCode= httpStatus.CONFLICT
+                error = err.meta
+            statusCode = httpStatus.CONFLICT
 
         }
-        
+
+
     }
 
-    else if(err instanceof Prisma.PrismaClientValidationError){
-        message= "validation Error ",
-        error = error.message
+    else if (err instanceof Prisma.PrismaClientValidationError) {
+        message = "validation Error ",
+            error = error.message
     }
-    else if(err instanceof Prisma.PrismaClientUnknownRequestError){
-        message= "Unknown prisma error occue ",
-        error = error.message
+    else if (err instanceof Prisma.PrismaClientUnknownRequestError) {
+        message = "Unknown prisma error occue ",
+            error = error.message
     }
-    else if(err instanceof Prisma.PrismaClientInitializationError){
-        message= "prisma client failed to initialized",
-        error = error.message
+    else if (err instanceof Prisma.PrismaClientInitializationError) {
+        message = "prisma client failed to initialized",
+            error = error.message
     }
     res.status(statusCode).json({
         success,

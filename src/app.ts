@@ -5,21 +5,22 @@ import httpStatus from 'http-status';
 import globalErrorHandler from './app/middlewares/globalErrorHandler';
 import router from './app/routes';
 
-
 const app: Application = express();
+
 app.use(cookieParser());
-
-
-
 app.use(cors({
     origin: ['http://localhost:3000', 'https://ph-health-care.vercel.app'],
     credentials: true
 }));
-
-
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
+// Increase timeout for large PDF uploads (1226 pages can take 2-3 minutes)
+app.use((req: Request, res: Response, next: NextFunction) => {
+    res.setTimeout(300000); // 5 minutes
+    req.setTimeout(300000);
+    next();
+});
 
 app.get('/', (req: Request, res: Response) => {
     res.send({
@@ -40,6 +41,6 @@ app.use((req: Request, res: Response, next: NextFunction) => {
             message: "Your requested path is not found!"
         }
     })
-})
+});
 
 export default app;

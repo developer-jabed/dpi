@@ -3,7 +3,7 @@ model AttendanceSession {
   subjectGroupId Int
   groupId        Int
   date           DateTime @db.Date
-  takenById      String   
+  takenById      String
 
   subjectGroup SubjectGroup @relation(fields: [subjectGroupId], references: [id])
   group        Group        @relation(fields: [groupId], references: [id])
@@ -14,12 +14,11 @@ model AttendanceSession {
   @@unique([subjectGroupId, date])
 }
 
-
 model AttendanceRecord {
-  id         Int @id @default(autoincrement())
-  sessionId  Int
-  studentId  Int
-  present    Boolean
+  id        Int     @id @default(autoincrement())
+  sessionId Int
+  studentId Int
+  present   Boolean
 
   session AttendanceSession @relation(fields: [sessionId], references: [id])
   student Student           @relation(fields: [studentId], references: [id])

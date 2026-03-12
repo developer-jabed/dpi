@@ -3,6 +3,10 @@ import { userRoutes } from '../modules/user/user.route';
 import { departmentRoutes } from '../modules/department/department.route';
 import { shiftRoutes } from '../modules/shift/shift.route';
 import { semesterRoutes } from '../modules/semester/semester.route';
+import { resultParserRoutes } from '../modules/result-parser/resultParser.route';
+import { AuthRoutes } from '../modules/auth/auth.route';
+import { subjectRoutes } from '../modules/subject/subject.route';
+import { subjectGroupRouter } from '../modules/subjectGroup/subjectGroup.route';
 
 const router = express.Router();
 
@@ -22,6 +26,22 @@ const moduleRoutes = [
 {
   path : '/semesters',
   route : semesterRoutes
+},
+{
+  path : '/result-parser',
+  route: resultParserRoutes
+},
+{
+  path : '/auth',
+  route: AuthRoutes
+},
+{
+  path : '/subjects',
+  route: subjectRoutes
+},
+{
+  path : '/subject-groups',
+  route: subjectGroupRouter
 }
 
 ];

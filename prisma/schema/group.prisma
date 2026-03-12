@@ -1,15 +1,15 @@
-
 model Group {
-  id                 Int      @id @default(autoincrement())
-  name               String  
-  semesterId         Int
+  id         Int    @id @default(autoincrement())
+  name       String
+  semesterId Int
 
-  semester           Semester @relation(fields: [semesterId], references: [id])
+  semester Semester @relation(fields: [semesterId], references: [id])
+
   students           Student[]
   subjectGroups      SubjectGroup[]
   attendanceSessions AttendanceSession[]
 
-  cr                 Cr?      @relation(name: "CRGroupRelation") // CR of this group
+  crs Cr[] @relation("CRGroupRelation")
 
   @@unique([semesterId, name])
 }

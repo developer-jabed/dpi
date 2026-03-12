@@ -5,17 +5,17 @@ model Subject {
   subjectGroups SubjectGroup[]
 }
 
-
 model SubjectGroup {
-  id        Int     @id @default(autoincrement())
+  id        Int  @id @default(autoincrement())
   subjectId Int
   groupId   Int
   teacherId Int?
-
-  subject Subject @relation(fields: [subjectId], references: [id])
-  group   Group   @relation(fields: [groupId], references: [id])
+  day       String?
+  startTime String?
+  endTime   String?
+  subject Subject  @relation(fields: [subjectId], references: [id])
+  group   Group    @relation(fields: [groupId], references: [id])
   teacher Teacher? @relation(fields: [teacherId], references: [id])
 
   attendanceSessions AttendanceSession[]
-
 }
