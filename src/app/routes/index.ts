@@ -7,6 +7,8 @@ import { resultParserRoutes } from '../modules/result-parser/resultParser.route'
 import { AuthRoutes } from '../modules/auth/auth.route';
 import { subjectRoutes } from '../modules/subject/subject.route';
 import { subjectGroupRouter } from '../modules/subjectGroup/subjectGroup.route';
+import { resultRoutes } from '../modules/result/result.router';
+import { groupRoutes } from '../modules/group/group.route';
 
 const router = express.Router();
 
@@ -42,6 +44,14 @@ const moduleRoutes = [
 {
   path : '/subject-groups',
   route: subjectGroupRouter
+},
+{
+  path : '/results',
+  route: resultRoutes
+},
+{
+  path : '/groups',
+  route: groupRoutes
 }
 
 ];

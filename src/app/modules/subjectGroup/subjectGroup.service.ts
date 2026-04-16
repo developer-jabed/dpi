@@ -46,41 +46,41 @@ export const subjectGroupService = {
     return subjectGroup;
   },
 
-//   getAllSubjectGroups: async (filters: ISubjectGroupFilterRequest) => {
-//     const { searchTerm, page = 1, limit = 10, sortBy, sortOrder } = filters;
+  // getAllSubjectGroups: async (filters: ISubjectGroupFilterRequest) => {
+  //   const { searchTerm, page = 1, limit = 10, sortBy, sortOrder } = filters;
 
-//     const where: Prisma.SubjectGroupWhereInput = searchTerm
-//       ? {
-//           OR: subjectGroupSearchableFields.map(field => ({
-//             [field]: { contains: searchTerm, mode: 'insensitive' },
-//           })),
-//         }
-//       : {};
+  //   const where: Prisma.SubjectGroupWhereInput = searchTerm
+  //     ? {
+  //         OR: subjectGroupSearchableFields.map(field => ({
+  //           [field]: { contains: searchTerm, mode: 'insensitive' },
+  //         })),
+  //       }
+  //     : {};
 
-//     const orderBy: any = sortBy && subjectGroupSortableFields.includes(sortBy)
-//       ? { [sortBy]: sortOrder || 'asc' }
-//       : { id: 'desc' };
+  //   const orderBy: any = sortBy && subjectGroupSortableFields.includes(sortBy)
+  //     ? { [sortBy]: sortOrder || 'asc' }
+  //     : { id: 'desc' };
 
-//     const skip = (page - 1) * limit;
+  //   const skip = (page - 1) * limit;
 
-//     const [data, total] = await Promise.all([
-//       prisma.subjectGroup.findMany({
-//         where,
-//         include: {
-//           subject: true,
-//           group: true,
-//           teacher: true,
-//           attendanceSessions: true,
-//         },
-//         orderBy,
-//         skip,
-//         take: limit,
-//       }),
-//       prisma.subjectGroup.count({ where }),
-//     ]);
+  //   const [data, total] = await Promise.all([
+  //     prisma.subjectGroup.findMany({
+  //       where,
+  //       include: {
+  //         subject: true,
+  //         group: true,
+  //         teacher: true,
+  //         attendanceSessions: true,
+  //       },
+  //       orderBy,
+  //       skip,
+  //       take: limit,
+  //     }),
+  //     prisma.subjectGroup.count({ where }),
+  //   ]);
 
-//     return paginationHelper(data, total, page, limit);
-//   },
+  //   return paginationHelper(data, total, page, limit);
+  // },
 
   updateSubjectGroup: async (id: number, payload: TSubjectGroupUpdate) => {
     // Optional: check unique combination if updating subjectId/groupId
