@@ -1,4 +1,4 @@
-import { UserStatus } from "@prisma/client";
+
 import * as bcrypt from 'bcryptjs';
 import httpStatus from "http-status";
 import { Secret } from "jsonwebtoken";
@@ -14,7 +14,6 @@ const loginUser = async (payload: { email: string; password: string }) => {
         userData = await prisma.user.findUniqueOrThrow({
             where: {
                 email: payload.email,
-                status: UserStatus.ACTIVE
             }
         });
     } catch (err) {
@@ -42,7 +41,7 @@ const loginUser = async (payload: { email: string; password: string }) => {
     return {
         accessToken,
         refreshToken,
-        needPasswordChange: userData.needPassChange
+        needPasswordChange: userData.needPasswordChange
     };
 };
 
@@ -58,7 +57,6 @@ const refreshToken = async (token: string) => {
     const userData = await prisma.user.findUniqueOrThrow({
         where: {
             email: decodedData.email,
-            status: UserStatus.ACTIVE
         }
     });
 
@@ -81,7 +79,7 @@ const refreshToken = async (token: string) => {
     return {
         accessToken,
         refreshToken,
-        needPasswordChange: userData.needPassChange
+        needPasswordChange: userData.needPasswordChange
     };
 
 };
@@ -90,7 +88,6 @@ const changePassword = async (user: any, payload: any) => {
     const userData = await prisma.user.findUniqueOrThrow({
         where: {
             email: user.email,
-            status: UserStatus.ACTIVE
         }
     });
 
@@ -108,7 +105,7 @@ const changePassword = async (user: any, payload: any) => {
         },
         data: {
             password: hashedPassword,
-            needPassChange: false
+            needPasswordChange: false
         }
     })
 
@@ -143,12 +140,12 @@ const resetPassword = async (token: string | null, payload: { email?: string, pa
         const authenticatedUser = await prisma.user.findUniqueOrThrow({
             where: {
                 email: user.email,
-                status: UserStatus.ACTIVE
+
             }
         });
 
         // Verify user actually needs password change
-        if (!authenticatedUser.needPassChange) {
+        if (!authenticatedUser.needPasswordChange) {
             throw new ApiError(httpStatus.BAD_REQUEST, "You don't need to reset your password. Use change password instead.")
         }
 
@@ -167,72 +164,74 @@ const resetPassword = async (token: string | null, payload: { email?: string, pa
         },
         data: {
             password,
-            needPassChange: false
+            needPasswordChange: false
         }
     })
 };
 
 const getMe = async (user: any) => {
     const accessToken = user.accessToken;
-    const decodedData = jwtHelpers.verifyToken(accessToken, config.jwt.jwt_secret as Secret);
+    const decodedData = jwtHelpers.verifyToken(
+        accessToken,
+        config.jwt.jwt_secret as Secret
+    );
 
     const userData = await prisma.user.findUniqueOrThrow({
         where: {
             email: decodedData.email,
-            status: UserStatus.ACTIVE
         },
         select: {
             id: true,
             email: true,
             role: true,
-            needPassChange: true,
-            status: true,
+            needPasswordChange: true,   // ← was needPasswordChange
+            isDeleted: true,        // ← was status
             createdAt: true,
             updatedAt: true,
+
             admin: {
                 select: {
                     id: true,
                     userId: true,
+                    roleLabel: true,
                     lastLogin: true,
-                }
+                },
             },
+
             teacher: {
-                select: {
-                    id: true,
-                    userId: true,
-                    name: true,
-                    email: true,
-                    profilePhoto: true,
-                    mobile: true,
-                    gender: true,
-                    birthDate: true,
-                    bio: true,
-                    birthnumber: true,
-                    presentAddress: true,
-                    permanentAddress: true,
-                    isDeleted: true,
-                    expertise: true,
-                }
+                include: {
+                    department: true,
+                    subjectGroups: {
+                        select: {
+                            id: true,
+                            teacherId: true,
+                            subjectId: true,
+                            groupId: true,
+                            semesterId: true,
+                        },
+                    },
+                },
             },
+
             student: {
-                include: { // use include for relations
+                include: {
+                    department: true,
                     group: {
                         include: {
-                            semester: true
-                        }
+                            currentSemester: true,
+                            shift: true,
+                        },
                     },
-                    department: true,
-                    diplomaResults: true,
                     attendanceRecords: true,
-                    cr: true
+                     diplomaResults: true,    
+      
                 },
-            }
-        }
+            },
+        },
     });
 
     return userData;
 };
-
 
 
 export const AuthServices = {

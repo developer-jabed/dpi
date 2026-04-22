@@ -5,74 +5,79 @@ import ApiError from "../../errors/api.error";
 import { paginationHelper } from "../../helper/paginationHelper";
 import { Prisma } from "@prisma/client";
 
-const groupSearchableFields = ["name"];
+const groupSearchableFields = ["name", "session"];
 
 // ── CREATE GROUP ─────────────────────────────────────────
 const createGroup = async (req: Request) => {
-  const { name, semesterId } = req.body;
+  const { name, session, departmentId, shiftId, currentSemesterId } = req.body;
 
-  if (!name || !semesterId) {
-    throw new ApiError(httpStatus.BAD_REQUEST, "Name and semesterId are required");
-  }
-
-  const semester = await prisma.semester.findUnique({
-    where: { id: Number(semesterId) },
-    include: { department: true, shift: true },
-  });
-
-  if (!semester) {
-    throw new ApiError(httpStatus.NOT_FOUND, "Semester not found");
-  }
-
-  // Check duplicate group name in same semester
-  const existingGroup = await prisma.group.findFirst({
-    where: {
-      name,
-      semesterId: Number(semesterId),
-    },
-  });
-
-  if (existingGroup) {
+  if (!name || !session || !departmentId || !shiftId || !currentSemesterId) {
     throw new ApiError(
-      httpStatus.CONFLICT,
-      `Group "${name}" already exists in this semester`
+      httpStatus.BAD_REQUEST,
+      "name, session, departmentId, shiftId and currentSemesterId are required"
     );
   }
 
-  const group = await prisma.group.create({
-    data: {
+  // validate relations exist
+  const [department, shift, semester] = await Promise.all([
+    prisma.department.findUnique({ where: { id: Number(departmentId) } }),
+    prisma.shift.findUnique({ where: { id: Number(shiftId) } }),
+    prisma.semester.findUnique({ where: { id: Number(currentSemesterId) } }),
+  ]);
+
+  if (!department || department.isDeleted) {
+    throw new ApiError(httpStatus.NOT_FOUND, "Department not found");
+  }
+  if (!shift || shift.isDeleted) {
+    throw new ApiError(httpStatus.NOT_FOUND, "Shift not found");
+  }
+  if (!semester || semester.isDeleted) {
+    throw new ApiError(httpStatus.NOT_FOUND, "Semester not found");
+  }
+
+  // duplicate check — same name + session + department + shift
+  const existing = await prisma.group.findFirst({
+    where: {
       name,
-      semesterId: Number(semesterId),
-    },
-    include: {
-      semester: {
-        include: {
-          shift: true,
-          department: true,
-        },
-      },
-      students: {
-        where: { isDeleted: false },
-        include: {
-          user: true,
-          department: true,
-        },
-        orderBy: { roll: "asc" },
-      },
+      session,
+      departmentId: Number(departmentId),
+      shiftId: Number(shiftId),
+      isDeleted: false,
     },
   });
 
-  return group;
+  if (existing) {
+    throw new ApiError(
+      httpStatus.CONFLICT,
+      `Group "${name}" already exists for this department, shift and session`
+    );
+  }
+
+  return prisma.group.create({
+    data: {
+      name,
+      session,
+      departmentId: Number(departmentId),
+      shiftId: Number(shiftId),
+      currentSemesterId: Number(currentSemesterId),
+    },
+    include: {
+      department: true,
+      shift: true,
+      currentSemester: true,
+    },
+  });
 };
 
-// ── GET ALL GROUPS WITH ADVANCED FILTER ───────────────────
+// ── GET ALL GROUPS ────────────────────────────────────────
 const getAllGroups = async (filters: any, options: any) => {
   const { page, limit, skip } = paginationHelper.calculatePagination(options);
-  const { searchTerm, departmentId, shiftId, semesterId, ...filterData } = filters;
+  const { searchTerm, departmentId, shiftId, semesterId, session } = filters;
 
-  const andConditions: Prisma.GroupWhereInput[] = [];
+  const andConditions: Prisma.GroupWhereInput[] = [
+    { isDeleted: false },
+  ];
 
-  // Search by group name
   if (searchTerm) {
     andConditions.push({
       OR: groupSearchableFields.map((field) => ({
@@ -81,68 +86,54 @@ const getAllGroups = async (filters: any, options: any) => {
     });
   }
 
-  // Filter by Department
   if (departmentId) {
-    andConditions.push({
-      semester: {
-        departmentId: Number(departmentId),
-      },
-    });
+    andConditions.push({ departmentId: Number(departmentId) });
   }
 
-  // Filter by Shift
   if (shiftId) {
-    andConditions.push({
-      semester: {
-        shiftId: Number(shiftId),
-      },
-    });
+    andConditions.push({ shiftId: Number(shiftId) });
   }
 
-  // Filter by Semester
+  // filter by current semester
   if (semesterId) {
-    andConditions.push({
-      semesterId: Number(semesterId),
-    });
+    andConditions.push({ currentSemesterId: Number(semesterId) });
   }
 
-  // Other filters (if any)
-  if (Object.keys(filterData).length > 0) {
-    andConditions.push({
-      AND: Object.entries(filterData).map(([key, value]) => ({
-        [key]: { equals: value },
-      })),
-    });
+  if (session) {
+    andConditions.push({ session: { contains: session, mode: "insensitive" } });
   }
 
-  const whereConditions =
-    andConditions.length > 0 ? { AND: andConditions } : {};
+  const where: Prisma.GroupWhereInput = { AND: andConditions };
 
-  const data = await prisma.group.findMany({
-    where: whereConditions,
-    skip,
-    take: limit,
-    orderBy: { id: "desc" },
-    include: {
-      semester: {
-        include: {
-          shift: true,
-          department: true,
+  const [data, total] = await Promise.all([
+    prisma.group.findMany({
+      where,
+      skip,
+      take: limit,
+      orderBy: [
+        { department: { name: "asc" } },
+        { currentSemester: { order: "asc" } },
+        { name: "asc" },
+      ],
+      include: {
+        department: true,
+        shift: true,
+        currentSemester: true,
+        crStudent: {
+          select: {
+            id: true,
+            name: true,
+            roll: true,
+            profilePhoto: true,
+          },
+        },
+        _count: {
+          select: { students: true },
         },
       },
-      students: {
-        where: { isDeleted: false },
-        include: {
-          user: true,
-          department: true,
-          diplomaResults: true,
-        },
-        orderBy: { roll: "asc" },
-      },
-    },
-  });
-
-  const total = await prisma.group.count({ where: whereConditions });
+    }),
+    prisma.group.count({ where }),
+  ]);
 
   return {
     meta: { page, limit, total },
@@ -150,37 +141,127 @@ const getAllGroups = async (filters: any, options: any) => {
   };
 };
 
-// ── GET SINGLE GROUP BY ID ───────────────────────────────
+// ── GET SINGLE GROUP BY ID ────────────────────────────────
 const getGroupById = async (id: number) => {
   const group = await prisma.group.findUnique({
     where: { id },
     include: {
-      semester: {
-        include: {
-          shift: true,
-          department: true,
+      department: true,
+      shift: true,
+      currentSemester: true,
+      crStudent: {
+        select: {
+          id: true,
+          name: true,
+          roll: true,
+          profilePhoto: true,
         },
       },
       students: {
         where: { isDeleted: false },
-        include: {
-          user: true,
-          department: true,
-        },
+        include: { department: true },
         orderBy: { roll: "asc" },
+      },
+      subjectGroups: {
+        where: { isDeleted: false },
+        include: {
+          subject: true,
+          teacher: {
+            select: {
+              id: true,
+              name: true,
+              designation: true,
+            },
+          },
+        },
       },
     },
   });
 
-  if (!group) {
+  if (!group || group.isDeleted) {
     throw new ApiError(httpStatus.NOT_FOUND, "Group not found");
   }
 
   return group;
 };
 
+// ── PROMOTE GROUP TO NEXT SEMESTER ────────────────────────
+const promoteGroup = async (id: number) => {
+  const group = await prisma.group.findUnique({
+    where: { id },
+    include: { currentSemester: true },
+  });
+
+  if (!group || group.isDeleted) {
+    throw new ApiError(httpStatus.NOT_FOUND, "Group not found");
+  }
+
+  const nextSemester = await prisma.semester.findFirst({
+    where: { order: group.currentSemester.order + 1 },
+  });
+
+  if (!nextSemester) {
+    throw new ApiError(httpStatus.BAD_REQUEST, "Group is already in the final semester (8th)");
+  }
+
+  return prisma.group.update({
+    where: { id },
+    data: { currentSemesterId: nextSemester.id },
+    include: {
+      currentSemester: true,
+      department: true,
+      shift: true,
+    },
+  });
+};
+
+// ── ASSIGN CR TO GROUP ────────────────────────────────────
+const assignCR = async (groupId: number, studentId: number) => {
+  const group = await prisma.group.findUnique({ where: { id: groupId } });
+  if (!group || group.isDeleted) {
+    throw new ApiError(httpStatus.NOT_FOUND, "Group not found");
+  }
+
+  const student = await prisma.student.findUnique({ where: { id: studentId } });
+  if (!student || student.isDeleted) {
+    throw new ApiError(httpStatus.NOT_FOUND, "Student not found");
+  }
+
+  // student must belong to this group
+  if (student.groupId !== groupId) {
+    throw new ApiError(httpStatus.BAD_REQUEST, "Student does not belong to this group");
+  }
+
+  return prisma.group.update({
+    where: { id: groupId },
+    data: { crStudentId: studentId },
+    include: {
+      crStudent: { select: { id: true, name: true, roll: true } },
+      currentSemester: true,
+      department: true,
+      shift: true,
+    },
+  });
+};
+
+// ── SOFT DELETE ───────────────────────────────────────────
+const deleteGroup = async (id: number) => {
+  const group = await prisma.group.findUnique({ where: { id } });
+  if (!group || group.isDeleted) {
+    throw new ApiError(httpStatus.NOT_FOUND, "Group not found");
+  }
+
+  return prisma.group.update({
+    where: { id },
+    data: { isDeleted: true },
+  });
+};
+
 export const groupService = {
   createGroup,
   getAllGroups,
   getGroupById,
+  promoteGroup,
+  assignCR,
+  deleteGroup,
 };

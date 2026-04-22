@@ -26,26 +26,8 @@ router.post(
     }
   }
 )
-router.post(
-  "/create-cr",
-  fileUploader.upload.single("file"),
-  (req, res, next) => {
-    try {
 
-      if (req.body.data) {
-        req.body = JSON.parse(req.body.data)
-      }
 
-      return userController.createCR(req, res, next)
-
-    } catch (error) {
-      return res.status(400).json({
-        success: false,
-        message: "Invalid JSON format"
-      })
-    }
-  }
-)
 router.post(
   "/create-student",
   fileUploader.upload.single("file"),
@@ -54,6 +36,7 @@ router.post(
 
       if (req.body.data) {
         req.body = JSON.parse(req.body.data)
+
       }
 
       return userController.createStudent(req, res, next)

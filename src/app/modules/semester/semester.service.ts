@@ -1,40 +1,31 @@
 import { prisma } from "../../shared/prisma";
 import { Request } from "express";
 import httpStatus from "http-status";
-import { ISemesterFilters } from "./semester.interface";
 import ApiError from "../../errors/api.error";
 
 const createSemester = async (req: Request) => {
-  const { semesterNo, departmentId, shiftId } = req.body;
+  const { name, order } = req.body;
 
-  if (!semesterNo || !departmentId || !shiftId) {
-    throw new ApiError(
-      httpStatus.BAD_REQUEST,
-      "semesterNo, departmentId and shiftId are required"
-    );
+  if (!name || !order) {
+    throw new ApiError(httpStatus.BAD_REQUEST, "name and order are required");
   }
 
-  const existingSemester = await prisma.semester.findFirst({
+  if (order < 1 || order > 8) {
+    throw new ApiError(httpStatus.BAD_REQUEST, "order must be between 1 and 8");
+  }
+
+  const existing = await prisma.semester.findFirst({
     where: {
-      semesterNo,
-      departmentId,
-      shiftId,
+      OR: [{ name }, { order }],
     },
   });
 
-  if (existingSemester) {
-    throw new ApiError(
-      httpStatus.CONFLICT,
-      "Semester already exists for this department & shift"
-    );
+  if (existing) {
+    throw new ApiError(httpStatus.CONFLICT, "Semester with this name or order already exists");
   }
 
   return prisma.semester.create({
-    data: {
-      semesterNo,
-      departmentId,
-      shiftId,
-    },
+    data: { name, order },
   });
 };
 
@@ -43,48 +34,18 @@ const getAllSemesters = async (req: Request) => {
   const limit = Number(req.query.limit) || 10;
   const skip = (page - 1) * limit;
 
-  const filters: ISemesterFilters = {
-    departmentId: req.query.departmentId
-      ? Number(req.query.departmentId)
-      : undefined,
-    shiftId: req.query.shiftId
-      ? Number(req.query.shiftId)
-      : undefined,
-  };
-
-  const andConditions: any[] = [];
-
-  if (filters.departmentId) {
-    andConditions.push({ departmentId: filters.departmentId });
-  }
-
-  if (filters.shiftId) {
-    andConditions.push({ shiftId: filters.shiftId });
-  }
-
-  const whereCondition =
-    andConditions.length > 0 ? { AND: andConditions } : {};
-
   const [data, total] = await Promise.all([
     prisma.semester.findMany({
-      where: whereCondition,
+      where: { isDeleted: false },
       skip,
       take: limit,
-      orderBy: { semesterNo: "asc" },
-      include: {
-        department: true,
-        shift: true,
-      },
+      orderBy: { order: "asc" },
     }),
-    prisma.semester.count({ where: whereCondition }),
+    prisma.semester.count({ where: { isDeleted: false } }),
   ]);
 
   return {
-    meta: {
-      page,
-      limit,
-      total,
-    },
+    meta: { page, limit, total },
     data,
   };
 };
@@ -93,21 +54,39 @@ const getSemesterById = async (id: number) => {
   const semester = await prisma.semester.findUnique({
     where: { id },
     include: {
-      department: true,
-      shift: true,
-      groups: true,
+      groups: {
+        where: { isDeleted: false },
+        include: {
+          department: true,
+          shift: true,
+        },
+      },
     },
   });
 
-  if (!semester) {
+  if (!semester || semester.isDeleted) {
     throw new ApiError(httpStatus.NOT_FOUND, "Semester not found");
   }
 
   return semester;
 };
 
+const deleteSemester = async (id: number) => {
+  const semester = await prisma.semester.findUnique({ where: { id } });
+
+  if (!semester || semester.isDeleted) {
+    throw new ApiError(httpStatus.NOT_FOUND, "Semester not found");
+  }
+
+  return prisma.semester.update({
+    where: { id },
+    data: { isDeleted: true },
+  });
+};
+
 export const semesterService = {
   createSemester,
   getAllSemesters,
   getSemesterById,
+  deleteSemester,
 };

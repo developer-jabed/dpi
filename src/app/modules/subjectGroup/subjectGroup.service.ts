@@ -8,7 +8,7 @@ import { subjectGroupSearchableFields, subjectGroupSortableFields } from './subj
 
 export const subjectGroupService = {
   createSubjectGroup: async (payload: TSubjectGroupCreate) => {
-    // Optional: validate unique combination of subjectId + groupId
+
     const existing = await prisma.subjectGroup.findFirst({
       where: { subjectId: payload.subjectId, groupId: payload.groupId },
     });
@@ -81,6 +81,22 @@ export const subjectGroupService = {
 
   //   return paginationHelper(data, total, page, limit);
   // },
+
+
+
+
+
+  getLoginTeacherSubjectGroups: async (teacherId: number) => {
+    return prisma.subjectGroup.findMany({
+      where: { teacherId },
+      include: {
+        subject: true,
+        group: true,
+        teacher: true,
+        attendanceSessions: true,
+      },
+    });
+  },
 
   updateSubjectGroup: async (id: number, payload: TSubjectGroupUpdate) => {
     // Optional: check unique combination if updating subjectId/groupId

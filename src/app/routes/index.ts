@@ -9,6 +9,8 @@ import { subjectRoutes } from '../modules/subject/subject.route';
 import { subjectGroupRouter } from '../modules/subjectGroup/subjectGroup.route';
 import { resultRoutes } from '../modules/result/result.router';
 import { groupRoutes } from '../modules/group/group.route';
+import { studentRoutes } from '../modules/student/student.route';
+import { TeacherRoutes } from '../modules/teacher/teacher.router';
 
 const router = express.Router();
 
@@ -52,6 +54,14 @@ const moduleRoutes = [
 {
   path : '/groups',
   route: groupRoutes
+},
+{
+  path : '/students',
+  route: studentRoutes
+},
+{
+  path : '/teachers',
+  route: TeacherRoutes
 }
 
 ];

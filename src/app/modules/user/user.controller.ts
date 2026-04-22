@@ -22,21 +22,6 @@ export const createAdmin = catchAsync(
 );
 
 
-export const createCR = catchAsync(
-  async (req: Request, res: Response) => {
-
-    const result = await userService.createCR(req);
-
-    sendResponse(res, {
-      statusCode: httpStatus.CREATED,
-      success: true,
-      message: result.student 
-        ? 'CR with Student created successfully'
-        : 'CR created successfully',
-      data: result,
-    });
-  }
-);
 
 
 export const createTeacher = catchAsync(
@@ -56,6 +41,7 @@ export const createTeacher = catchAsync(
 export const createStudent = catchAsync(
   async (req: Request, res: Response) => {
     const result = await userService.createStudent(req);
+
 
     sendResponse(res, {
       statusCode: httpStatus.CREATED,
@@ -79,7 +65,6 @@ export const createStudent = catchAsync(
 
 export const userController = {
   createAdmin,
-  createCR,
   createTeacher,
   createStudent,
 

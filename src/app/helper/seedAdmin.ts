@@ -34,7 +34,7 @@ export const seedAdmin = async () => {
         email: config.admin_email,
         password: hashedPassword,
         role: Role.ADMIN, // explicitly set ADMIN
-        needPassChange: false,
+        needPasswordChange: false,
       },
     });
 

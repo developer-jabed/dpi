@@ -5,3 +5,292 @@ generator client {
 datasource db {
   provider = "postgresql"
 }
+
+
+model User {
+  id        Int      @id @default(autoincrement())
+  email     String   @unique
+  password  String
+  needPasswordChange Boolean? @default(false)
+  role      Role     @default(STUDENT)
+  isDeleted Boolean  @default(false)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  admin   Admin?
+  teacher Teacher?
+  student Student?
+}
+
+enum Role {
+  ADMIN
+  TEACHER
+  STUDENT
+}
+
+enum DiplomaResultStatus {
+  PASSED
+  REFERRED
+  FAILED
+  WITHHELD
+}
+
+model Department {
+  id        Int      @id @default(autoincrement())
+  name      String   @unique
+  shortName String
+  isDeleted Boolean  @default(false)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  shifts   Shift[]
+  groups   Group[]
+  students Student[]
+  subjects Subject[]
+  teachers Teacher[]
+}
+
+model Shift {
+  id           Int      @id @default(autoincrement())
+  name         String
+  shortName    String
+  departmentId Int
+  isDeleted    Boolean  @default(false)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  department Department @relation(fields: [departmentId], references: [id])
+  groups     Group[]
+}
+
+model Semester {
+  id        Int      @id @default(autoincrement())
+  name      String   @unique
+  order     Int      @unique
+  isDeleted Boolean  @default(false)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  groups             Group[]            @relation("CurrentSemester")
+  subjects           Subject[]
+  subjectGroups      SubjectGroup[]
+  attendanceSessions AttendanceSession[]
+  diplomaResults DiplomaResult[]
+}
+
+model Group {
+  id                Int      @id @default(autoincrement())
+  name              String
+  session           String
+  departmentId      Int
+  shiftId           Int
+  currentSemesterId Int
+  crStudentId       Int?
+  isDeleted         Boolean  @default(false)
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  department      Department @relation(fields: [departmentId], references: [id])
+  shift           Shift      @relation(fields: [shiftId], references: [id])
+  currentSemester Semester   @relation("CurrentSemester", fields: [currentSemesterId], references: [id])
+  crStudent       Student?   @relation("CRStudent", fields: [crStudentId], references: [id])
+
+  students           Student[]          @relation("GroupStudents")
+  subjectGroups      SubjectGroup[]
+  attendanceSessions AttendanceSession[]
+  diplomaResults DiplomaResult[]
+}
+
+
+
+model Teacher {
+  id           Int      @id @default(autoincrement())
+  userId       Int      @unique
+  departmentId Int
+  name         String
+  email        String   @unique
+  mobile       String
+  designation  String
+  profilePhoto String?
+  isDeleted    Boolean  @default(false)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  user               User               @relation(fields: [userId], references: [id])
+  department         Department         @relation(fields: [departmentId], references: [id])
+  subjectGroups      SubjectGroup[]
+  attendanceSessions AttendanceSession[]
+}
+
+model Student {
+  id               Int      @id @default(autoincrement())
+  userId           Int      @unique
+  groupId          Int
+  departmentId     Int
+  name             String
+  email            String   @unique
+  roll             String   @unique
+  registration     String   @unique
+  mobile           String
+  gender           String
+  birthDate        DateTime
+  birthnumber      String
+  nid              String?
+  fatherName       String
+  motherName       String
+  fatherMobile     String
+  motherMobile     String
+  presentAddress   String
+  permanentAddress String
+  profilePhoto     String?
+  isDeleted        Boolean  @default(false)
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  user       User       @relation(fields: [userId], references: [id])
+  group      Group      @relation("GroupStudents", fields: [groupId], references: [id])
+  department Department @relation(fields: [departmentId], references: [id])
+
+  crOfGroup         Group[]            @relation("CRStudent")
+  attendanceRecords AttendanceRecord[]
+  diplomaResults DiplomaResult[]
+}
+
+model Admin {
+  id         Int      @id @default(autoincrement())
+  userId     Int      @unique
+  roleLabel  String
+  lastLogin  DateTime?
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id])
+}  
+
+model Subject {
+  id           Int      @id @default(autoincrement())
+  name         String
+  shortName    String
+  code         String   @unique
+  semesterId   Int
+  departmentId Int
+  totalClasses Int      @default(0)
+  isDeleted    Boolean  @default(false)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  semester           Semester           @relation(fields: [semesterId], references: [id])
+  department         Department         @relation(fields: [departmentId], references: [id])
+  subjectGroups      SubjectGroup[]
+  attendanceSessions AttendanceSession[]
+}
+
+model SubjectGroup {
+  id         Int      @id @default(autoincrement())
+  teacherId  Int
+  subjectId  Int
+  groupId    Int
+  semesterId Int
+  isDeleted  Boolean  @default(false)
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  teacher  Teacher  @relation(fields: [teacherId], references: [id])
+  subject  Subject  @relation(fields: [subjectId], references: [id])
+  group    Group    @relation(fields: [groupId], references: [id])
+  semester Semester @relation(fields: [semesterId], references: [id])
+
+  @@unique([teacherId, subjectId, groupId, semesterId])
+}
+
+enum TakenByRole {
+  TEACHER
+  CR
+}
+
+model AttendanceSession {
+  id          Int         @id @default(autoincrement())
+  groupId     Int
+  semesterId  Int
+  subjectId   Int
+  teacherId   Int?
+  crStudentId Int?
+  takenByRole TakenByRole
+  date        DateTime
+  isDeleted   Boolean     @default(false)
+  createdAt   DateTime    @default(now())
+  updatedAt   DateTime    @updatedAt
+
+  group    Group    @relation(fields: [groupId], references: [id])
+  semester Semester @relation(fields: [semesterId], references: [id])
+  subject  Subject  @relation(fields: [subjectId], references: [id])
+  teacher  Teacher? @relation(fields: [teacherId], references: [id])
+
+  records AttendanceRecord[]
+
+  @@unique([groupId, subjectId, semesterId, date])
+}
+
+enum AttendanceStatus {
+  PRESENT
+  ABSENT
+  LATE
+}
+
+model AttendanceRecord {
+  id                  Int              @id @default(autoincrement())
+  attendanceSessionId Int
+  studentId           Int
+  status              AttendanceStatus
+  createdAt           DateTime         @default(now())
+  updatedAt           DateTime         @updatedAt
+  session AttendanceSession @relation(fields: [attendanceSessionId], references: [id])
+  student Student           @relation(fields: [studentId], references: [id])
+  @@unique([attendanceSessionId, studentId])
+}
+
+
+
+model DiplomaResult {
+  id            Int                 @id @default(autoincrement())
+ 
+  studentId     Int?
+  student       Student?            @relation(fields: [studentId], references: [id])
+
+  semesterId    Int?
+  semester      Semester?           @relation(fields: [semesterId], references: [id])
+ 
+  groupId       Int?
+  group         Group?              @relation(fields: [groupId], references: [id])
+
+  roll          String              
+  instituteCode String              // e.g. "13085"
+  instituteName String              // e.g. "Dinajpur Polytechnic Institute"
+  semesterName  String              // e.g. "3rd"  ← raw string kept for reference
+  examYear      Int                 // e.g. 2024
+  regulation    String              // e.g. "2022"
+  status        DiplomaResultStatus
+
+  gpa1          Float?
+  gpa2          Float?
+  gpa3          Float?
+  gpa4          Float?
+  gpa5          Float?
+  gpa6          Float?
+  gpa7          Float?
+
+  referredSubjects String[]         @default([])
+  failedSubjects   String[]         @default([])
+ 
+  isDeleted     Boolean             @default(false)
+  createdAt     DateTime            @default(now())
+  updatedAt     DateTime            @updatedAt
+
+  @@unique([roll, semesterName, examYear, regulation])
+  @@index([studentId])
+  @@index([semesterId])
+  @@index([groupId])
+  @@index([roll])
+  @@index([instituteCode])
+
+}
