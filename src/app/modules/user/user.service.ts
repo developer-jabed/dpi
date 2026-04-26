@@ -51,7 +51,7 @@ export const userService = {
           email: email.toLowerCase(),
           password: await hashPassword(password),
           role: Role.ADMIN,
-          needPassChange: false,
+          needPasswordChange: false,
           admin: {
             create: {
               roleLabel,

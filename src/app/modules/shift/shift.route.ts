@@ -5,6 +5,6 @@ const router = express.Router();
 
 router.post("/", shiftController.createShift);
 router.get("/", shiftController.getAllShifts);
-router.get("/:id", shiftController.getShiftById);
+router.get("/:id", shiftController.getSingleShift);
 
 export const shiftRoutes = router;
