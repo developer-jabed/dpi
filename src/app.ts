@@ -9,7 +9,7 @@ const app: Application = express();
 
 app.use(cookieParser());
 app.use(cors({
-    origin: ['http://localhost:3000', 'https://ph-health-care.vercel.app'],
+    origin: ['http://localhost:3000', 'https://cst-inky.vercel.app'],
     credentials: true
 }));
 app.use(express.json());
