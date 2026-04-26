@@ -1,21 +1,28 @@
-// src/app/modules/subjectGroup/subjectGroup.interface.ts
+// subjectGroup.interface.ts
 
 export interface TSubjectGroupCreate {
-  subjectId: number;
-  groupId: number;
-  teacherId?: number | null;
+  teacherId:  number;
+  subjectId:  number;
+  groupId:    number;
+  semesterId: number;
 }
 
 export interface TSubjectGroupUpdate {
-  subjectId?: number;
-  groupId?: number;
-  teacherId?: number | null;
+  teacherId?:  number;
+  subjectId?:  number;
+  groupId?:    number;
+  semesterId?: number;
 }
 
 export interface ISubjectGroupFilterRequest {
   searchTerm?: string;
-  page?: number;
-  limit?: number;
-  sortBy?: string;
-  sortOrder?: 'asc' | 'desc';
+  page?:       number;
+  limit?:      number;
+  sortBy?:     string;
+  sortOrder?:  'asc' | 'desc';
+  teacherId?:  number;
+  subjectId?:  number;
+  groupId?:    number;
+  semesterId?: number;
+  isDeleted?:  boolean;
 }

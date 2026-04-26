@@ -30,17 +30,17 @@ export const subjectGroupController = {
     });
   }),
 
-//   getAllSubjectGroups: catchAsync(async (req: Request, res: Response) => {
-//     const filters: ISubjectGroupFilterRequest = req.query as any;
-//     const result = await subjectGroupService.getAllSubjectGroups(filters);
+  getAllSubjectGroups: catchAsync(async (req: Request, res: Response) => {
+    const filters: ISubjectGroupFilterRequest = req.query as any;
+    const result = await subjectGroupService.getAllSubjectGroups(filters);
 
-//     sendResponse(res, {
-//       statusCode: httpStatus.OK,
-//       success: true,
-//       message: 'Subject groups retrieved successfully!',
-//       data: result,
-//     });
-//   }),
+    sendResponse(res, {
+      statusCode: httpStatus.OK,
+      success: true,
+      message: 'Subject groups retrieved successfully!',
+      data: result,
+    });
+  }),
 
   updateSubjectGroup: catchAsync(async (req: Request, res: Response) => {
     const id = Number(req.params.id);

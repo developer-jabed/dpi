@@ -1,3 +1,5 @@
+// subject.service.ts
+
 import { prisma } from '../../shared/prisma';
 import { Prisma } from '@prisma/client';
 import ApiError from '../../errors/api.error';
@@ -6,8 +8,23 @@ import { paginationHelper } from '../../helper/paginationHelper';
 import { subjectSearchableFields, subjectSortableFields } from './subject.constant';
 import { ISubjectFilterRequest, TSubjectCreate, TSubjectUpdate } from './subject.interface';
 
-const createSubject = async (payload: TSubjectCreate) => {
+// ─── Reusable include ────────────────────────────────────────────────────────
+const subjectInclude = {
+  semester:   true,
+  department: true,
+} satisfies Prisma.SubjectInclude;
 
+// ─── Helper ──────────────────────────────────────────────────────────────────
+const findOrThrow = async (id: number) => {
+  const record = await prisma.subject.findUnique({ where: { id } });
+  if (!record) {
+    throw new ApiError(httpStatus.NOT_FOUND, 'Subject not found');
+  }
+  return record;
+};
+
+// ─── Service ─────────────────────────────────────────────────────────────────
+const createSubject = async (payload: TSubjectCreate) => {
   const existing = await prisma.subject.findUnique({
     where: { code: payload.code },
   });
@@ -16,46 +33,31 @@ const createSubject = async (payload: TSubjectCreate) => {
     throw new ApiError(httpStatus.CONFLICT, 'Subject code already exists');
   }
 
-  const result = await prisma.subject.create({
-    data: payload,
+  return prisma.subject.create({
+    data:    payload,
+    include: subjectInclude,
   });
-
-  return result;
 };
 
 const getAllSubjects = async (filters: ISubjectFilterRequest) => {
-  const {
-    searchTerm,
-
-    page,
-    limit,
-    sortBy,
-    sortOrder,
-    ...filterData
-  } = filters;
-
+  const { searchTerm, page, limit, sortBy, sortOrder, ...filterData } = filters;
 
   const andConditions: Prisma.SubjectWhereInput[] = [];
 
-
+  // ── Search across scalar fields ──
   if (searchTerm?.trim()) {
     andConditions.push({
       OR: subjectSearchableFields.map((field) => ({
-        [field]: {
-          contains: searchTerm.trim(),
-          mode: 'insensitive',
-        },
+        [field]: { contains: searchTerm.trim(), mode: 'insensitive' },
       })),
     });
   }
 
-
+  // ── Exact-match filters (semesterId, departmentId, isDeleted) ──
   if (Object.keys(filterData).length > 0) {
     const filterConditions = Object.entries(filterData)
       .filter(([_, value]) => value != null)
-      .map(([field, value]) => ({
-        [field]: value,
-      }));
+      .map(([field, value]) => ({ [field]: value }));
 
     if (filterConditions.length > 0) {
       andConditions.push({ AND: filterConditions });
@@ -65,7 +67,7 @@ const getAllSubjects = async (filters: ISubjectFilterRequest) => {
   const where: Prisma.SubjectWhereInput =
     andConditions.length > 0 ? { AND: andConditions } : {};
 
-
+  // ── Pagination ──
   const pagination = paginationHelper.calculatePagination({
     page,
     limit,
@@ -73,23 +75,21 @@ const getAllSubjects = async (filters: ISubjectFilterRequest) => {
     sortOrder,
   });
 
+  if (!subjectSortableFields.includes(pagination.sortBy as any)) {
+    throw new ApiError(httpStatus.BAD_REQUEST, 'Invalid sortBy field');
+  }
 
   const orderBy: Prisma.SubjectOrderByWithRelationInput = {
     [pagination.sortBy]: pagination.sortOrder,
   };
 
- 
-  if (!subjectSortableFields.includes(pagination.sortBy as any)) {
-    throw new ApiError(httpStatus.BAD_REQUEST, 'Invalid sortBy field');
-  }
-
-
-  const [subjects, total] = await Promise.all([
+  const [data, total] = await Promise.all([
     prisma.subject.findMany({
       where,
+      include: subjectInclude,
+      orderBy,
       skip: pagination.skip,
       take: pagination.limit,
-      orderBy,
     }),
     prisma.subject.count({ where }),
   ]);
@@ -98,21 +98,24 @@ const getAllSubjects = async (filters: ISubjectFilterRequest) => {
 
   return {
     meta: {
-      page: pagination.page,
-      limit: pagination.limit,
+      page:      pagination.page,
+      limit:     pagination.limit,
       total,
       totalPages,
-      hasNext: pagination.page < totalPages,
-      hasPrev: pagination.page > 1,
+      hasNext:   pagination.page < totalPages,
+      hasPrev:   pagination.page > 1,
     },
-    data: subjects,
+    data,
   };
 };
 
 const getSingleSubject = async (id: number) => {
   const result = await prisma.subject.findUnique({
-    where: { id },
-    include: { subjectGroups: true },
+    where:   { id },
+    include: {
+      ...subjectInclude,
+      subjectGroups: true,   // extra detail for single view
+    },
   });
 
   if (!result) {
@@ -123,13 +126,9 @@ const getSingleSubject = async (id: number) => {
 };
 
 const updateSubject = async (id: number, payload: TSubjectUpdate) => {
-  const subject = await prisma.subject.findUnique({ where: { id } });
+  const subject = await findOrThrow(id);
 
-  if (!subject) {
-    throw new ApiError(httpStatus.NOT_FOUND, 'Subject not found');
-  }
-
-  // Optional: prevent code duplication on update
+  // Prevent duplicate code on update
   if (payload.code && payload.code !== subject.code) {
     const duplicate = await prisma.subject.findUnique({
       where: { code: payload.code },
@@ -139,33 +138,51 @@ const updateSubject = async (id: number, payload: TSubjectUpdate) => {
     }
   }
 
-  const result = await prisma.subject.update({
-    where: { id },
-    data: payload,
+  return prisma.subject.update({
+    where:   { id },
+    data: {
+      name:         payload.name,
+      shortName:    payload.shortName,
+      code:         payload.code,
+      semesterId:   payload.semesterId,
+      departmentId: payload.departmentId,
+      totalClasses: payload.totalClasses,
+    },
+    include: subjectInclude,
   });
-
-  return result;
 };
 
 const deleteSubject = async (id: number) => {
-  const subject = await prisma.subject.findUnique({ where: { id } });
+  await findOrThrow(id);
 
-  if (!subject) {
-    throw new ApiError(httpStatus.NOT_FOUND, 'Subject not found');
-  }
-
-
+  // Block delete if subject groups exist
   const hasGroups = await prisma.subjectGroup.count({
     where: { subjectId: id },
   });
 
   if (hasGroups > 0) {
-    throw new ApiError(httpStatus.BAD_REQUEST, 'Cannot delete subject with associated groups');
+    throw new ApiError(
+      httpStatus.BAD_REQUEST,
+      'Cannot delete subject with associated groups',
+    );
   }
 
-  await prisma.subject.delete({ where: { id } });
+  // Block delete if attendance sessions exist
+  const hasAttendance = await prisma.attendanceSession.count({
+    where: { subjectId: id },
+  });
 
-  return { message: 'Subject deleted successfully' };
+  if (hasAttendance > 0) {
+    throw new ApiError(
+      httpStatus.BAD_REQUEST,
+      'Cannot delete subject with existing attendance sessions',
+    );
+  }
+
+  return prisma.subject.update({
+    where: { id },
+    data:  { isDeleted: true },     // soft delete
+  });
 };
 
 export const subjectService = {

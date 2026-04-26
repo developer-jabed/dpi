@@ -1,3 +1,17 @@
-export const subjectSearchableFields = ['name', 'code'] as const;
+// subject.constant.ts
 
-export const subjectSortableFields = ['name', 'code', 'createdAt'] as const;
+export const subjectSearchableFields = [
+  'name',
+  'shortName',
+  'code',
+] as const;
+
+export const subjectSortableFields = [
+  'id',
+  'name',
+  'shortName',
+  'code',
+  'totalClasses',
+  'createdAt',
+  'updatedAt',
+] as const;

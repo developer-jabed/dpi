@@ -1,30 +1,23 @@
-// subject.interface.ts
+// shift.interface.ts
 
-export interface TSubjectCreate {
+export interface TShiftCreate {
   name:         string;
   shortName:    string;
-  code:         string;
-  semesterId:   number;
   departmentId: number;
-  totalClasses?: number;
 }
 
-export interface TSubjectUpdate {
+export interface TShiftUpdate {
   name?:         string;
   shortName?:    string;
-  code?:         string;
-  semesterId?:   number;
   departmentId?: number;
-  totalClasses?: number;
 }
 
-export interface ISubjectFilterRequest {
+export interface IShiftFilterRequest {
   searchTerm?:   string;
   page?:         number;
   limit?:        number;
   sortBy?:       string;
   sortOrder?:    'asc' | 'desc';
-  semesterId?:   number;
   departmentId?: number;
   isDeleted?:    boolean;
 }

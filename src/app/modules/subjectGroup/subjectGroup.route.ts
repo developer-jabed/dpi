@@ -7,7 +7,7 @@ const router = express.Router();
 router.post('/', subjectGroupController.createSubjectGroup);
 
 // Get all subject groups
-// router.get('/', subjectGroupController.getAllSubjectGroups);
+router.get('/', subjectGroupController.getAllSubjectGroups);
 
 // Get a single subject group by ID
 router.get('/:id', subjectGroupController.getSingleSubjectGroup);
