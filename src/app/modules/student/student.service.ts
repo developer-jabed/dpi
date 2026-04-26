@@ -17,7 +17,7 @@ type FilterPayload = {
 
 export const studentService = {
 
-  // ========================= GET ALL STUDENTS =========================
+
   getAllStudents: async (filters: FilterPayload, paginationOptions: PaginationOptions) => {
     const { page, limit, skip, sortBy, sortOrder } =
       paginationHelper.calculatePagination(paginationOptions);

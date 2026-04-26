@@ -7,16 +7,16 @@
     "schema": "./prisma/schema"
   },
   "scripts": {
-    "dev": "ts-node-dev --respawn --transpile-only src/server.ts",
+    "dev": "ts-node-dev --respawn --transpile-only ./src/server.ts",
     "build": "tsc",
-    "start": "node dist/server.js",
-    "format": "prettier --write .",
-    "db:generate": "prisma generate",
-    "db:migrate": "prisma migrate deploy",
-    "db:push": "prisma db push",
-    "db:pull": "prisma db pull",
-    "db:studio": "prisma studio",
-    "postinstall": "echo 'skip prisma generate'"
+    "start": "node ./dist/server.js",
+    "db:generate": "prisma generate --schema=./prisma/schema",
+    "db:migrate": "prisma migrate --schema=./prisma/schema",
+    "db:push": "prisma db push --schema=./prisma/schema",
+    "db:pull": "prisma db pull --schema=./prisma/schema",
+    "db:studio": "prisma studio --schema=./prisma/schema",
+    "postinstall": "prisma generate --schema=./prisma/schema",
+    "stripe:webhook": "stripe listen --forward-to localhost:5000/webhook"
   },
   "devDependencies": {
     "@prisma/client": "^7.2.0",
