@@ -18,7 +18,7 @@ router.get(
 router.get(
   "/:id",
   (req: Request, res: Response, next: NextFunction) => {
-    return departmentController.getDepartmentById(req, res, next);
+    return departmentController.getSingleDepartment(req, res, next);
   }
 );
 router.put(
