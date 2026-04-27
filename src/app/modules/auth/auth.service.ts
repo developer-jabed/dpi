@@ -6,6 +6,7 @@ import config from "../../../config";
 import { prisma } from "../../shared/prisma";
 import { jwtHelpers } from "../../helper/jwtHelper";
 import ApiError from "../../errors/api.error";
+import { id } from 'zod/v4/locales';
 
 const loginUser = async (payload: { email: string; password: string }) => {
     let userData;
@@ -27,13 +28,13 @@ const loginUser = async (payload: { email: string; password: string }) => {
     }
 
     const accessToken = jwtHelpers.generateToken(
-        { email: userData.email, role: userData.role },
+        { email: userData.email, role: userData.role ,id: userData.id},
         config.jwt.jwt_secret as Secret,
         config.jwt.expires_in as string
     );
 
     const refreshToken = jwtHelpers.generateToken(
-        { email: userData.email, role: userData.role },
+        { email: userData.email, role: userData.role ,id: userData.id},
         config.jwt.refresh_token_secret as Secret,
         config.jwt.refresh_token_expires_in as string
     );
@@ -62,7 +63,8 @@ const refreshToken = async (token: string) => {
 
     const accessToken = jwtHelpers.generateToken({
         email: userData.email,
-        role: userData.role
+        role: userData.role,
+        id: userData.id
     },
         config.jwt.jwt_secret as Secret,
         config.jwt.expires_in as string
@@ -70,7 +72,8 @@ const refreshToken = async (token: string) => {
 
     const refreshToken = jwtHelpers.generateToken({
         email: userData.email,
-        role: userData.role
+        role: userData.role,
+        id: userData.id
     },
         config.jwt.refresh_token_secret as Secret,
         config.jwt.refresh_token_expires_in as string

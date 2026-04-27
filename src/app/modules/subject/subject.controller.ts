@@ -7,6 +7,7 @@ import { subjectService } from './subject.service';
 
 
 const createSubject = catchAsync(async (req: Request, res: Response) => {
+
   const result = await subjectService.createSubject(req.body);
 
   sendResponse(res, {
@@ -53,22 +54,12 @@ const updateSubject = catchAsync(async (req: Request, res: Response) => {
   });
 });
 
-const deleteSubject = catchAsync(async (req: Request, res: Response) => {
-  const { id } = req.params;
-  const result = await subjectService.deleteSubject(Number(id));
 
-  sendResponse(res, {
-    statusCode: httpStatus.OK,
-    success: true,
-    message: 'Subject deleted successfully!',
-    data: result,
-  });
-});
 
 export const subjectController = {
   createSubject,
   getAllSubjects,
   getSingleSubject,
   updateSubject,
-  deleteSubject,
+
 };

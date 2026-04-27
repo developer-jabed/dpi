@@ -117,6 +117,7 @@ const getAllGroups = async (filters: any, options: any) => {
       ],
       include: {
         department: true,
+
         shift: true,
         currentSemester: true,
         crStudent: {
@@ -162,6 +163,7 @@ const getGroupById = async (id: number) => {
         include: { department: true },
         orderBy: { roll: "asc" },
       },
+      diplomaResults: true,
       subjectGroups: {
         where: { isDeleted: false },
         include: {

@@ -24,7 +24,7 @@ const safeUserSelect = {
   student: true,
 } satisfies Prisma.UserSelect;
 
-// ========================= UPLOAD HELPER =========================
+
 const uploadProfilePhoto = async (req: Request, existingUrl?: string): Promise<string | null> => {
   if (!req.file) return existingUrl ?? null;
 
@@ -65,7 +65,7 @@ export const userService = {
     });
   },
 
-  // ========================= CREATE TEACHER =========================
+
   createTeacher: async (req: Request) => {
     const teacherData = req.body.teacher;
     const { password } = req.body;
@@ -100,7 +100,7 @@ export const userService = {
     });
   },
 
-  // ========================= CREATE STUDENT =========================
+
   createStudent: async (req: Request) => {
     const studentData = req.body.student;
     const { password } = req.body;
@@ -149,5 +149,101 @@ export const userService = {
 
       return { user };
     });
+  },
+  updateProfile: async (req: Request) => {
+    const userId = req.user?.id;
+    const role = req.user?.role as Role;
+
+    if (!userId || !role) {
+      throw new ApiError(httpStatus.UNAUTHORIZED, "User not authenticated");
+    }
+
+    // Upload MUST complete fully before any DB work begins
+    let profilePhotoUrl: string | null = null;
+    try {
+      profilePhotoUrl = await uploadProfilePhoto(req);
+    } catch (error) {
+      throw new ApiError(httpStatus.INTERNAL_SERVER_ERROR, "Failed to upload profile photo");
+    }
+
+    return prisma.$transaction(
+      async (tx) => {
+        if (role === Role.TEACHER) {
+          const teacherData = req.body.teacher || req.body;
+
+          if (teacherData.email) {
+            throw new ApiError(httpStatus.BAD_REQUEST, "Email cannot be updated");
+          }
+
+          const updatedUser = await tx.user.update({
+            where: { id: Number(userId) },
+            data: {
+              teacher: {
+                update: {
+                  name: teacherData.name,
+                  mobile: teacherData.mobile,
+                  designation: teacherData.designation,
+                  departmentId: teacherData.departmentId,
+                  ...(profilePhotoUrl && { profilePhoto: profilePhotoUrl }),
+                },
+              },
+            },
+            select: safeUserSelect,
+          });
+
+          return { user: updatedUser };
+
+        } else if (role === Role.STUDENT) {
+          const studentData = req.body.student || req.body;
+
+          if (studentData.email) {
+            throw new ApiError(httpStatus.BAD_REQUEST, "Email cannot be updated");
+          }
+          if (studentData.roll) {
+            throw new ApiError(httpStatus.BAD_REQUEST, "Roll cannot be updated");
+          }
+          if (studentData.registration) {
+            throw new ApiError(httpStatus.BAD_REQUEST, "Registration cannot be updated");
+          }
+
+          const updatedUser = await tx.user.update({
+            where: { id: Number(userId) },
+            data: {
+              student: {
+                update: {
+                  name: studentData.name,
+                  mobile: studentData.mobile,
+                  gender: studentData.gender,
+                  birthDate: studentData.birthDate
+                    ? validationService.validateDate(studentData.birthDate)
+                    : undefined,
+                  birthnumber: studentData.birthnumber,
+                  nid: studentData.nid,
+                  fatherName: studentData.fatherName,
+                  motherName: studentData.motherName,
+                  fatherMobile: studentData.fatherMobile,
+                  motherMobile: studentData.motherMobile,
+                  presentAddress: studentData.presentAddress,
+                  permanentAddress: studentData.permanentAddress,
+                  ...(profilePhotoUrl && { profilePhoto: profilePhotoUrl }),
+                },
+              },
+            },
+            select: safeUserSelect,
+          });
+
+          return { user: updatedUser };
+
+        } else {
+          throw new ApiError(
+            httpStatus.FORBIDDEN,
+            "Only students and teachers can update their profile"
+          );
+        }
+      },
+      {
+        timeout: 10000, // 10 second timeout
+      }
+    );
   },
 };

@@ -381,6 +381,39 @@ export const validateAdminData = async (data: any): Promise<void> => {
   validateRoleLabel(data.roleLabel);
 };
 
+
+
+// In validationService
+
+export const validateTeacherUpdateData = (data: any): void => {
+  if (data.name) validateName(data.name, 'Teacher name');
+  if (data.mobile) validateBangladeshMobile(data.mobile, 'Mobile number');
+  if (data.designation) validateDesignation(data.designation);
+  if (data.departmentId) validateDepartmentExists(data.departmentId); // Note: make this sync or handle async separately
+};
+
+export const validateStudentUpdateData = (data: any): void => {
+  if (data.name) validateName(data.name, 'Student name');
+  if (data.mobile) validateBangladeshMobile(data.mobile);
+  if (data.gender) validateGender(data.gender);
+  if (data.birthDate) validateDate(data.birthDate, 'Birth date');
+  if (data.fatherName) validateName(data.fatherName, 'Father name');
+  if (data.motherName) validateName(data.motherName, 'Mother name');
+  if (data.presentAddress) validateAddress(data.presentAddress, 'Present address');
+  if (data.permanentAddress) validateAddress(data.permanentAddress, 'Permanent address');
+
+  // Explicitly block sensitive fields
+  if (data.email) {
+    throw new ApiError(httpStatus.BAD_REQUEST, "Email cannot be updated");
+  }
+  if (data.roll) {
+    throw new ApiError(httpStatus.BAD_REQUEST, "Roll cannot be updated");
+  }
+  if (data.registration) {
+    throw new ApiError(httpStatus.BAD_REQUEST, "Registration cannot be updated");
+  }
+};
+
 // ─── EXPORT ───────────────────────────────────────────
 
 export const validationService = {

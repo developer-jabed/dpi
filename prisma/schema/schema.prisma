@@ -171,6 +171,7 @@ model Subject {
   id           Int      @id @default(autoincrement())
   name         String
   shortName    String
+  credits      Int?
   code         String   @unique
   semesterId   Int
   departmentId Int

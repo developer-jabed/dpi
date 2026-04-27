@@ -4,6 +4,7 @@ import express, { Application, NextFunction, Request, Response } from 'express';
 import httpStatus from 'http-status';
 import globalErrorHandler from './app/middlewares/globalErrorHandler';
 import router from './app/routes';
+import pg from 'pg';
 
 const app: Application = express();
 
@@ -20,6 +21,23 @@ app.use((req: Request, res: Response, next: NextFunction) => {
     res.setTimeout(300000); // 5 minutes
     req.setTimeout(300000);
     next();
+});
+
+// Replace your current diagnostic in app.ts with this
+const originalQuery = pg.Client.prototype.query;
+(pg.Client.prototype as any).query = function (...args: any[]) {
+  if ((this as any)._queryable === false || (this as any)._ending) {
+    console.error('=== PG DOUBLE QUERY STACK ===');
+    console.trace();
+  }
+  return (originalQuery as any).apply(this, args);
+};
+
+(process as NodeJS.EventEmitter).on('warning', (warning: Error) => {
+  if (warning.message?.includes('client.query')) {
+    console.error('=== WARNING STACK ===');
+    console.trace(warning);
+  }
 });
 
 app.get('/', (req: Request, res: Response) => {

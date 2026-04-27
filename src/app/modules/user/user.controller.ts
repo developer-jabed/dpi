@@ -52,7 +52,21 @@ export const createStudent = catchAsync(
   }
 );
 
+export const updateProfile = catchAsync(
+  async (req: Request, res: Response) => {
+  
+    const result = await userService.updateProfile(req);
 
+    
+
+    sendResponse(res, {
+      statusCode: httpStatus.OK,
+      success: true,
+      message: 'Profile updated successfully',
+      data: result,
+    });
+  }
+);
 
 
 
@@ -67,6 +81,6 @@ export const userController = {
   createAdmin,
   createTeacher,
   createStudent,
-
+  updateProfile,
 
 };

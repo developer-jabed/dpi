@@ -1,4 +1,3 @@
-// subjectGroup.service.ts
 
 import { prisma } from '../../shared/prisma';
 import { Prisma } from '@prisma/client';
@@ -12,7 +11,6 @@ import {
   TSubjectGroupUpdate,
 } from './subjectGroup.interface';
 
-// ─── Reusable include ────────────────────────────────────────────────────────
 const subjectGroupInclude = {
   teacher:  true,
   subject:  true,

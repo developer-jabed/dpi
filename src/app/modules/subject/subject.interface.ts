@@ -4,6 +4,7 @@ export interface TSubjectCreate {
   name:         string;
   shortName:    string;
   code:         string;
+  credits?: number;
   semesterId:   number;
   departmentId: number;
   totalClasses?: number;

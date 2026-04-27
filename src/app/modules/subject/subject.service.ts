@@ -1,4 +1,3 @@
-// subject.service.ts
 
 import { prisma } from '../../shared/prisma';
 import { Prisma } from '@prisma/client';
@@ -8,13 +7,14 @@ import { paginationHelper } from '../../helper/paginationHelper';
 import { subjectSearchableFields, subjectSortableFields } from './subject.constant';
 import { ISubjectFilterRequest, TSubjectCreate, TSubjectUpdate } from './subject.interface';
 
-// ─── Reusable include ────────────────────────────────────────────────────────
+
 const subjectInclude = {
-  semester:   true,
+  semester: true,
   department: true,
+
 } satisfies Prisma.SubjectInclude;
 
-// ─── Helper ──────────────────────────────────────────────────────────────────
+
 const findOrThrow = async (id: number) => {
   const record = await prisma.subject.findUnique({ where: { id } });
   if (!record) {
@@ -23,7 +23,6 @@ const findOrThrow = async (id: number) => {
   return record;
 };
 
-// ─── Service ─────────────────────────────────────────────────────────────────
 const createSubject = async (payload: TSubjectCreate) => {
   const existing = await prisma.subject.findUnique({
     where: { code: payload.code },
@@ -34,7 +33,15 @@ const createSubject = async (payload: TSubjectCreate) => {
   }
 
   return prisma.subject.create({
-    data:    payload,
+    data: {
+      name: payload.name,
+      shortName: payload.shortName,
+      code: payload.code,
+      credits: payload.credits,        
+      semesterId: payload.semesterId,
+      departmentId: payload.departmentId,
+      totalClasses: payload.totalClasses ?? 0,
+    },
     include: subjectInclude,
   });
 };
@@ -44,7 +51,7 @@ const getAllSubjects = async (filters: ISubjectFilterRequest) => {
 
   const andConditions: Prisma.SubjectWhereInput[] = [];
 
-  // ── Search across scalar fields ──
+
   if (searchTerm?.trim()) {
     andConditions.push({
       OR: subjectSearchableFields.map((field) => ({
@@ -53,7 +60,7 @@ const getAllSubjects = async (filters: ISubjectFilterRequest) => {
     });
   }
 
-  // ── Exact-match filters (semesterId, departmentId, isDeleted) ──
+
   if (Object.keys(filterData).length > 0) {
     const filterConditions = Object.entries(filterData)
       .filter(([_, value]) => value != null)
@@ -67,7 +74,7 @@ const getAllSubjects = async (filters: ISubjectFilterRequest) => {
   const where: Prisma.SubjectWhereInput =
     andConditions.length > 0 ? { AND: andConditions } : {};
 
-  // ── Pagination ──
+
   const pagination = paginationHelper.calculatePagination({
     page,
     limit,
@@ -98,12 +105,12 @@ const getAllSubjects = async (filters: ISubjectFilterRequest) => {
 
   return {
     meta: {
-      page:      pagination.page,
-      limit:     pagination.limit,
+      page: pagination.page,
+      limit: pagination.limit,
       total,
       totalPages,
-      hasNext:   pagination.page < totalPages,
-      hasPrev:   pagination.page > 1,
+      hasNext: pagination.page < totalPages,
+      hasPrev: pagination.page > 1,
     },
     data,
   };
@@ -111,10 +118,10 @@ const getAllSubjects = async (filters: ISubjectFilterRequest) => {
 
 const getSingleSubject = async (id: number) => {
   const result = await prisma.subject.findUnique({
-    where:   { id },
+    where: { id },
     include: {
       ...subjectInclude,
-      subjectGroups: true,   // extra detail for single view
+      subjectGroups: true,
     },
   });
 
@@ -128,7 +135,7 @@ const getSingleSubject = async (id: number) => {
 const updateSubject = async (id: number, payload: TSubjectUpdate) => {
   const subject = await findOrThrow(id);
 
-  // Prevent duplicate code on update
+
   if (payload.code && payload.code !== subject.code) {
     const duplicate = await prisma.subject.findUnique({
       where: { code: payload.code },
@@ -139,12 +146,12 @@ const updateSubject = async (id: number, payload: TSubjectUpdate) => {
   }
 
   return prisma.subject.update({
-    where:   { id },
+    where: { id },
     data: {
-      name:         payload.name,
-      shortName:    payload.shortName,
-      code:         payload.code,
-      semesterId:   payload.semesterId,
+      name: payload.name,
+      shortName: payload.shortName,
+      code: payload.code,
+      semesterId: payload.semesterId,
       departmentId: payload.departmentId,
       totalClasses: payload.totalClasses,
     },
@@ -152,43 +159,10 @@ const updateSubject = async (id: number, payload: TSubjectUpdate) => {
   });
 };
 
-const deleteSubject = async (id: number) => {
-  await findOrThrow(id);
-
-  // Block delete if subject groups exist
-  const hasGroups = await prisma.subjectGroup.count({
-    where: { subjectId: id },
-  });
-
-  if (hasGroups > 0) {
-    throw new ApiError(
-      httpStatus.BAD_REQUEST,
-      'Cannot delete subject with associated groups',
-    );
-  }
-
-  // Block delete if attendance sessions exist
-  const hasAttendance = await prisma.attendanceSession.count({
-    where: { subjectId: id },
-  });
-
-  if (hasAttendance > 0) {
-    throw new ApiError(
-      httpStatus.BAD_REQUEST,
-      'Cannot delete subject with existing attendance sessions',
-    );
-  }
-
-  return prisma.subject.update({
-    where: { id },
-    data:  { isDeleted: true },     // soft delete
-  });
-};
 
 export const subjectService = {
   createSubject,
   getAllSubjects,
   getSingleSubject,
   updateSubject,
-  deleteSubject,
 };
