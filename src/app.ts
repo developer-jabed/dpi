@@ -13,8 +13,8 @@ app.use(cors({
     origin: ['http://localhost:3000', 'https://cst-inky.vercel.app'],
     credentials: true
 }));
-app.use(express.json());
-app.use(express.urlencoded({ extended: true }));
+app.use(express.json({ limit: '50mb' }));
+app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 
 // Increase timeout for large PDF uploads (1226 pages can take 2-3 minutes)
 app.use((req: Request, res: Response, next: NextFunction) => {

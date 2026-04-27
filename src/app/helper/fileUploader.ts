@@ -38,24 +38,32 @@ const upload = multer({
 // memory upload (PDF parsing / buffer processing)
 const uploadToMemory = multer({
   storage: memoryStorage,
-  limits: { fileSize: 20 * 1024 * 1024 },
+  limits: { fileSize: 50 * 1024 * 1024 }, // increase to 50MB
   fileFilter: (req, file, cb) => {
+    console.log('fileFilter hit — mimetype:', file.mimetype, '| originalname:', file.originalname);
+    
     const allowed = [
       'application/pdf',
       'image/jpeg',
       'image/png',
       'image/webp',
       'image/gif',
-    ]
+    ];
+
+    if (file.mimetype === 'application/octet-stream') {
+      const ext = file.originalname.split('.').pop()?.toLowerCase();
+      console.log('octet-stream detected, ext:', ext);
+      if (ext === 'pdf') return cb(null, true);
+      return cb(new Error('Unsupported file type'));
+    }
 
     if (allowed.includes(file.mimetype)) {
-      cb(null, true)
+      cb(null, true);
     } else {
-      cb(new Error(`Unsupported file type: ${file.mimetype}`))
+      cb(new Error(`Unsupported file type: ${file.mimetype}`));
     }
   },
-})
-
+});
 /* ---------------- CLOUDINARY CONFIG ---------------- */
 
 cloudinary.config({
