@@ -42,7 +42,7 @@ const originalQuery = pg.Client.prototype.query;
 
 app.get('/', (req: Request, res: Response) => {
     res.send({
-        Message: "Dinajpur Polytechnic server.."
+        Message: "Dinajpur Polytechnic server...."
     })
 });
 
