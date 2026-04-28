@@ -16,10 +16,10 @@ app.use(cors({
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 
-// Increase timeout for large PDF uploads (1226 pages can take 2-3 minutes)
+
 app.use((req: Request, res: Response, next: NextFunction) => {
-    res.setTimeout(300000); // 5 minutes
-    req.setTimeout(300000);
+    res.setTimeout(600000);
+    req.setTimeout(600000);
     next();
 });
 
