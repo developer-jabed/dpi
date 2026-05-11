@@ -34,6 +34,7 @@ export interface ParsedStudent {
   gpa5: number | null;
   gpa6: number | null;
   gpa7: number | null;
+  // gpa8: number | null;
 
   /** Subject codes the student is referred in, e.g. ["66711"] */
   referredSubjects: string[];
