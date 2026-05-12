@@ -154,6 +154,7 @@ model Student {
   crOfGroup         Group[]            @relation("CRStudent")
   attendanceRecords AttendanceRecord[]
   diplomaResults DiplomaResult[]
+  practicalSubmissions PracticalSubmission[]
 }
 
 model Admin {
@@ -200,9 +201,50 @@ model SubjectGroup {
   subject  Subject  @relation(fields: [subjectId], references: [id])
   group    Group    @relation(fields: [groupId], references: [id])
   semester Semester @relation(fields: [semesterId], references: [id])
+  practicals Practical[]
+
 
   @@unique([teacherId, subjectId, groupId, semesterId])
 }
+
+model Practical {
+  id             Int                   @id @default(autoincrement())
+  subjectGroupId Int
+  title          String
+  totalMarks     Int
+  type           PracticalType
+
+  givenDate          DateTime?            @default(now())
+  submissionDeadline DateTime?
+  
+  isDeleted      Boolean               @default(false)
+  createdAt      DateTime              @default(now())
+  updatedAt      DateTime              @updatedAt
+
+  subjectGroup   SubjectGroup          @relation(fields: [subjectGroupId], references: [id])
+  submissions    PracticalSubmission[]
+}
+
+model PracticalSubmission {
+  id          Int               @id @default(autoincrement())
+  practicalId Int
+  studentId   Int
+  obtainedMarks Int?
+  submitted   Boolean           @default(false)
+  createdAt   DateTime          @default(now())
+  updatedAt   DateTime          @updatedAt
+
+  practical   Practical         @relation(fields: [practicalId], references: [id])
+  student     Student           @relation(fields: [studentId], references: [id])
+
+  @@unique([practicalId, studentId])
+}
+
+enum PracticalType {
+  PRACTICAL
+  JOB
+}
+
 
 enum TakenByRole {
   TEACHER

@@ -204,15 +204,7 @@ const getMe = async (user: any) => {
             teacher: {
                 include: {
                     department: true,
-                    subjectGroups: {
-                        select: {
-                            id: true,
-                            teacherId: true,
-                            subjectId: true,
-                            groupId: true,
-                            semesterId: true,
-                        },
-                    },
+                    subjectGroups: true,
                 },
             },
 
