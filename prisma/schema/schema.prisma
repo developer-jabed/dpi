@@ -96,6 +96,7 @@ model Group {
   shift           Shift      @relation(fields: [shiftId], references: [id])
   currentSemester Semester   @relation("CurrentSemester", fields: [currentSemesterId], references: [id])
   crStudent       Student?   @relation("CRStudent", fields: [crStudentId], references: [id])
+  routines          ClassRoutine[]
 
   students           Student[]          @relation("GroupStudents")
   subjectGroups      SubjectGroup[]
@@ -204,6 +205,8 @@ model SubjectGroup {
   isDeleted  Boolean  @default(false)
   createdAt  DateTime @default(now())
   updatedAt  DateTime @updatedAt
+
+  routines          ClassRoutine[]
 
   teacher  Teacher  @relation(fields: [teacherId], references: [id])
   subject  Subject  @relation(fields: [subjectId], references: [id])
@@ -394,6 +397,26 @@ model Notice {
   @@index([groupId])
   @@index([studentId])
   @@index([audienceType])
+}
+
+model ClassRoutine {
+  id              Int      @id @default(autoincrement())
+  groupId         Int
+  subjectGroupId  Int      // Link to teacher + subject + group
+  dayOfWeek       Int      // 0=Sunday, 1=Monday ... 6=Saturday
+  period          Int      // 1, 2, 3, 4, 5, 6, 7
+  startTime       String   // "08:00"
+  endTime         String   // "09:00"
+  room            String?  // Lab / Classroom name
+  isActive        Boolean  @default(true)
+
+  group         Group        @relation(fields: [groupId], references: [id])
+  subjectGroup  SubjectGroup @relation(fields: [subjectGroupId], references: [id])
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([groupId, dayOfWeek, period])  // One subject per slot
 }
 
 

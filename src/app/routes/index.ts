@@ -15,6 +15,8 @@ import { attendanceRoutes } from '../modules/attendence/attendence.router';
 import { practicalRoutes } from '../modules/practical/practical.router';
 import { eventRoutes } from '../modules/event/event.route';
 import { noticeRoutes } from '../modules/notice/notice.route';
+import { dashboardRoutes } from '../modules/meta/meta.route';
+import { routineRoutes } from '../modules/routine/routine.route';
 
 const router = express.Router();
 
@@ -82,6 +84,14 @@ const moduleRoutes = [
 {
   path: "/notices",
   route:noticeRoutes
+},
+{
+  path: "/meta",
+  route: dashboardRoutes
+},
+{
+  path: "/routine",
+  route: routineRoutes
 }
 
 ];
