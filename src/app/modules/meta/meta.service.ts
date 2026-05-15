@@ -3,10 +3,6 @@ import ApiError from "../../errors/api.error";
 import httpStatus from "http-status";
 
 
-
-
-
-
 const getLast12Months = () => {
   const months = [];
   const now = new Date();
@@ -30,15 +26,12 @@ const getLastMonthRange = () => {
   return { start, end };
 };
 
-// ─────────────────────────────────────────────────────────────
-// Admin Dashboard - FIXED & CLEAN
-// ─────────────────────────────────────────────────────────────
 
 export const getAdminDashboard = async () => {
   const months = getLast12Months();
   const { start: lastMonthStart, end: lastMonthEnd } = getLastMonthRange();
 
-  // ── 1. Core counts + overview ───────────────────────────────
+
   const [
     totalStudents,
     totalTeachers,
@@ -52,6 +45,7 @@ export const getAdminDashboard = async () => {
     totalAttendanceSessions,
     totalPracticals,
     totalPracticalJobs,
+    // FIX: added orderBy to every groupBy
     attendanceOverview,
     diplomaResultStats,
     noticesByAudience,
@@ -72,35 +66,81 @@ export const getAdminDashboard = async () => {
     prisma.notice.count({ where: { isPublished: true } }),
     prisma.event.count(),
     prisma.attendanceSession.count({ where: { isDeleted: false } }),
-
     prisma.practical.count({ where: { isDeleted: false, type: "PRACTICAL" } }),
     prisma.practical.count({ where: { isDeleted: false, type: "JOB" } }),
 
-    prisma.attendanceRecord.groupBy({ by: ["status"], _count: { id: true } }),
+    // FIX TS2345 – orderBy required by this Prisma version
+    prisma.attendanceRecord.groupBy({
+      by: ["status"],
+      orderBy: { status: "asc" },
+      _count: { id: true },
+    }),
 
     prisma.diplomaResult.groupBy({
       by: ["status"],
       where: { isDeleted: false },
+      orderBy: { status: "asc" },
       _count: { id: true },
     }),
 
-    prisma.notice.groupBy({ by: ["audienceType"], _count: { id: true } }),
-    prisma.notice.groupBy({ by: ["priority"], _count: { id: true } }),
+    prisma.notice.groupBy({
+      by: ["audienceType"],
+      orderBy: { audienceType: "asc" },
+      _count: { id: true },
+    }),
+
+    prisma.notice.groupBy({
+      by: ["priority"],
+      orderBy: { priority: "asc" },
+      _count: { id: true },
+    }),
 
     prisma.notice.findMany({
       take: 5,
       orderBy: { createdAt: "desc" },
-      select: { id: true, title: true, audienceType: true, priority: true, isPublished: true, createdAt: true },
+      select: {
+        id: true,
+        title: true,
+        audienceType: true,
+        priority: true,
+        isPublished: true,
+        createdAt: true,
+      },
     }),
+
     prisma.event.findMany({
       take: 5,
       orderBy: { createdAt: "desc" },
-      select: { id: true, title: true, eventType: true, eventDate: true, location: true },
+      select: {
+        id: true,
+        title: true,
+        eventType: true,
+        eventDate: true,
+        location: true,
+      },
     }),
 
-    prisma.student.groupBy({ by: ["departmentId"], where: { isDeleted: false }, _count: { id: true } }),
-    prisma.teacher.groupBy({ by: ["departmentId"], where: { isDeleted: false }, _count: { id: true } }),
-    prisma.group.groupBy({ by: ["departmentId"], where: { isDeleted: false }, _count: { id: true } }),
+    // FIX TS2345 – orderBy required
+    prisma.student.groupBy({
+      by: ["departmentId"],
+      where: { isDeleted: false },
+      orderBy: { departmentId: "asc" },
+      _count: { id: true },
+    }),
+
+    prisma.teacher.groupBy({
+      by: ["departmentId"],
+      where: { isDeleted: false },
+      orderBy: { departmentId: "asc" },
+      _count: { id: true },
+    }),
+
+    prisma.group.groupBy({
+      by: ["departmentId"],
+      where: { isDeleted: false },
+      orderBy: { departmentId: "asc" },
+      _count: { id: true },
+    }),
   ]);
 
   // ── 2. Last Semester Diploma Results ────────────────────────
@@ -120,6 +160,7 @@ export const getAdminDashboard = async () => {
           semesterName: lastResultSemester.semesterName,
           examYear: lastResultSemester.examYear,
         },
+        orderBy: { status: "asc" }, // FIX
         _count: { id: true },
       }),
       prisma.diplomaResult.aggregate({
@@ -153,14 +194,14 @@ export const getAdminDashboard = async () => {
       failRate: semTotal > 0 ? Math.round((semFailed / semTotal) * 100) : 0,
       referredRate: semTotal > 0 ? Math.round((semReferred / semTotal) * 100) : 0,
       gpa: {
-        avgGpa1: semesterGPAStats._avg.gpa1 ? Math.round(semesterGPAStats._avg.gpa1 * 100) / 100 : null,
+        avgGpa1: semesterGPAStats._avg.gpa1 != null ? Math.round(semesterGPAStats._avg.gpa1 * 100) / 100 : null,
         maxGpa1: semesterGPAStats._max.gpa1 ?? null,
         minGpa1: semesterGPAStats._min.gpa1 ?? null,
       },
     };
   }
 
-  // ── 3. Last Month Attendance ────────────────────────────────
+  // ── 3. Last Month Attendance ─────────────────────────────────
   const groupsForAttendance = await prisma.group.findMany({
     where: { isDeleted: false },
     select: {
@@ -179,6 +220,7 @@ export const getAdminDashboard = async () => {
         where: {
           session: { groupId: g.id, date: { gte: lastMonthStart, lte: lastMonthEnd } },
         },
+        orderBy: { status: "asc" }, // FIX
         _count: { id: true },
       });
 
@@ -186,15 +228,13 @@ export const getAdminDashboard = async () => {
       const absent = records.find((r) => r.status === "ABSENT")?._count.id ?? 0;
       const late = records.find((r) => r.status === "LATE")?._count.id ?? 0;
       const total = present + absent + late;
-
-      const semesterName = g.currentSemester?.name || "";
-      const displayName = semesterName ? `${semesterName} ${g.name}` : g.name;
+      const semesterName = g.currentSemester?.name ?? "";
 
       return {
         groupId: g.id,
         groupName: g.name,
         semesterName,
-        displayName,
+        displayName: semesterName ? `${semesterName} ${g.name}` : g.name,
         departmentId: g.departmentId,
         present,
         absent,
@@ -202,12 +242,13 @@ export const getAdminDashboard = async () => {
         total,
         attendanceRate: total > 0 ? Math.round((present / total) * 100) : 0,
       };
-    })
+    }),
   );
 
   const lastMonthRecords = await prisma.attendanceRecord.groupBy({
     by: ["status"],
     where: { session: { date: { gte: lastMonthStart, lte: lastMonthEnd } } },
+    orderBy: { status: "asc" }, // FIX
     _count: { id: true },
   });
 
@@ -218,7 +259,9 @@ export const getAdminDashboard = async () => {
 
   const lastMonthAttendance = {
     month: lastMonthStart.toLocaleString("default", { month: "long", year: "numeric" }),
-    sessions: await prisma.attendanceSession.count({ where: { isDeleted: false, date: { gte: lastMonthStart, lte: lastMonthEnd } } }),
+    sessions: await prisma.attendanceSession.count({
+      where: { isDeleted: false, date: { gte: lastMonthStart, lte: lastMonthEnd } },
+    }),
     present: lastMonthPresent,
     absent: lastMonthAbsent,
     late: lastMonthLate,
@@ -227,12 +270,19 @@ export const getAdminDashboard = async () => {
     byGroup: groupAttendanceLastMonth.sort((a, b) => b.attendanceRate - a.attendanceRate),
   };
 
-  // ── 4. Monthly Data ─────────────────────────────────────────
+  // ── 4. Monthly Data ──────────────────────────────────────────
   const monthlyAttendance = await Promise.all(
     months.map(async (m) => {
       const [sessions, records] = await Promise.all([
-        prisma.attendanceSession.count({ where: { isDeleted: false, date: { gte: m.start, lte: m.end } } }),
-        prisma.attendanceRecord.groupBy({ by: ["status"], where: { session: { date: { gte: m.start, lte: m.end } } }, _count: { id: true } }),
+        prisma.attendanceSession.count({
+          where: { isDeleted: false, date: { gte: m.start, lte: m.end } },
+        }),
+        prisma.attendanceRecord.groupBy({
+          by: ["status"],
+          where: { session: { date: { gte: m.start, lte: m.end } } },
+          orderBy: { status: "asc" }, // FIX
+          _count: { id: true },
+        }),
       ]);
 
       const present = records.find((r) => r.status === "PRESENT")?._count.id ?? 0;
@@ -251,7 +301,7 @@ export const getAdminDashboard = async () => {
         total,
         attendanceRate: total > 0 ? Math.round((present / total) * 100) : 0,
       };
-    })
+    }),
   );
 
   const monthlyDiplomaResults = await Promise.all(
@@ -259,6 +309,7 @@ export const getAdminDashboard = async () => {
       const results = await prisma.diplomaResult.groupBy({
         by: ["status"],
         where: { isDeleted: false, createdAt: { gte: m.start, lte: m.end } },
+        orderBy: { status: "asc" }, // FIX
         _count: { id: true },
       });
 
@@ -279,10 +330,10 @@ export const getAdminDashboard = async () => {
         total,
         passRate: total > 0 ? Math.round((passed / total) * 100) : 0,
       };
-    })
+    }),
   );
 
-  // ── 5. Diploma Analysis ─────────────────────────────────────
+  // ── 5. Diploma Analysis ──────────────────────────────────────
   const [
     diplomaBySemesterName,
     diplomaByExamYear,
@@ -290,42 +341,100 @@ export const getAdminDashboard = async () => {
     topReferredSubjectsRaw,
     topFailedSubjectsRaw,
   ] = await Promise.all([
-    prisma.diplomaResult.groupBy({ by: ["semesterName", "status"], where: { isDeleted: false }, _count: { id: true }, orderBy: { semesterName: "asc" } }),
-    prisma.diplomaResult.groupBy({ by: ["examYear", "status"], where: { isDeleted: false }, _count: { id: true }, orderBy: { examYear: "asc" } }),
-    prisma.diplomaResult.groupBy({ by: ["semesterName"], where: { isDeleted: false, status: "PASSED", gpa1: { not: null } }, _avg: { gpa1: true }, _count: { id: true } }),
-    prisma.diplomaResult.findMany({ where: { isDeleted: false, status: "REFERRED", referredSubjects: { isEmpty: false } }, select: { referredSubjects: true } }),
-    prisma.diplomaResult.findMany({ where: { isDeleted: false, status: "FAILED", failedSubjects: { isEmpty: false } }, select: { failedSubjects: true } }),
+    prisma.diplomaResult.groupBy({
+      by: ["semesterName", "status"],
+      where: { isDeleted: false },
+      orderBy: { semesterName: "asc" }, // FIX
+      _count: { id: true },
+    }),
+    prisma.diplomaResult.groupBy({
+      by: ["examYear", "status"],
+      where: { isDeleted: false },
+      orderBy: { examYear: "asc" }, // FIX
+      _count: { id: true },
+    }),
+    prisma.diplomaResult.groupBy({
+      by: ["semesterName"],
+      where: { isDeleted: false, status: "PASSED", gpa1: { not: null } },
+      orderBy: { semesterName: "asc" }, // FIX
+      _avg: { gpa1: true },
+      _count: { id: true },
+    }),
+    prisma.diplomaResult.findMany({
+      where: { isDeleted: false, status: "REFERRED", referredSubjects: { isEmpty: false } },
+      select: { referredSubjects: true },
+    }),
+    prisma.diplomaResult.findMany({
+      where: { isDeleted: false, status: "FAILED", failedSubjects: { isEmpty: false } },
+      select: { failedSubjects: true },
+    }),
   ]);
 
-  // Process Top Subjects
+  // Process top subjects
   const referredFreq: Record<string, number> = {};
-  topReferredSubjectsRaw.forEach((r) => r.referredSubjects.forEach((s) => (referredFreq[s] = (referredFreq[s] ?? 0) + 1)));
-  const topReferredSubjects = Object.entries(referredFreq).sort((a, b) => b[1] - a[1]).slice(0, 10).map(([subject, count]) => ({ subject, count }));
+  topReferredSubjectsRaw.forEach((r) =>
+    r.referredSubjects.forEach((s) => (referredFreq[s] = (referredFreq[s] ?? 0) + 1)),
+  );
+  const topReferredSubjects = Object.entries(referredFreq)
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 10)
+    .map(([subject, count]) => ({ subject, count }));
 
   const failedFreq: Record<string, number> = {};
-  topFailedSubjectsRaw.forEach((r) => r.failedSubjects.forEach((s) => (failedFreq[s] = (failedFreq[s] ?? 0) + 1)));
-  const topFailedSubjects = Object.entries(failedFreq).sort((a, b) => b[1] - a[1]).slice(0, 10).map(([subject, count]) => ({ subject, count }));
+  topFailedSubjectsRaw.forEach((r) =>
+    r.failedSubjects.forEach((s) => (failedFreq[s] = (failedFreq[s] ?? 0) + 1)),
+  );
+  const topFailedSubjects = Object.entries(failedFreq)
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 10)
+    .map(([subject, count]) => ({ subject, count }));
 
-  // Semester & Year Pivot
-  const bySemester: any = {};
+  // Pivot by semester
+  const bySemester: Record<string, { passed: number; failed: number; referred: number; withheld: number; total: number; passRate: number }> = {};
   diplomaBySemesterName.forEach(({ semesterName, status, _count }) => {
-    if (!bySemester[semesterName]) bySemester[semesterName] = { passed: 0, failed: 0, referred: 0, withheld: 0, total: 0, passRate: 0 };
-    const key = status.toLowerCase();
-    if (key in bySemester[semesterName]) bySemester[semesterName][key] = _count.id;
+    if (!bySemester[semesterName])
+      bySemester[semesterName] = { passed: 0, failed: 0, referred: 0, withheld: 0, total: 0, passRate: 0 };
+    const key = status.toLowerCase() as keyof typeof bySemester[string];
+    if (key in bySemester[semesterName]) (bySemester[semesterName] as any)[key] = _count.id;
     bySemester[semesterName].total += _count.id;
   });
-  Object.values(bySemester).forEach((v: any) => v.passRate = v.total > 0 ? Math.round((v.passed / v.total) * 100) : 0);
+  Object.values(bySemester).forEach(
+    (v) => (v.passRate = v.total > 0 ? Math.round((v.passed / v.total) * 100) : 0),
+  );
 
-  const byYear: any = {};
+  // Pivot by year
+  const byYear: Record<number, { passed: number; failed: number; referred: number; withheld: number; total: number; passRate: number }> = {};
   diplomaByExamYear.forEach(({ examYear, status, _count }) => {
-    if (!byYear[examYear]) byYear[examYear] = { passed: 0, failed: 0, referred: 0, withheld: 0, total: 0, passRate: 0 };
-    const key = status.toLowerCase();
-    if (key in byYear[examYear]) byYear[examYear][key] = _count.id;
+    if (!byYear[examYear])
+      byYear[examYear] = { passed: 0, failed: 0, referred: 0, withheld: 0, total: 0, passRate: 0 };
+    const key = status.toLowerCase() as keyof typeof byYear[number];
+    if (key in byYear[examYear]) (byYear[examYear] as any)[key] = _count.id;
     byYear[examYear].total += _count.id;
   });
-  Object.values(byYear).forEach((v: any) => v.passRate = v.total > 0 ? Math.round((v.passed / v.total) * 100) : 0);
+  Object.values(byYear).forEach(
+    (v) => (v.passRate = v.total > 0 ? Math.round((v.passed / v.total) * 100) : 0),
+  );
 
-  // ── Final Return ────────────────────────────────────────────
+  // Dept enrichment
+  const departments = await prisma.department.findMany({
+    where: { isDeleted: false },
+    select: { id: true, name: true, shortName: true },
+  });
+  const enrichWithDept = (groups: { departmentId: number; _count: { id: number } }[]) =>
+    groups.map((g) => ({
+      department: departments.find((d) => d.id === g.departmentId) ?? null,
+      count: g._count.id,
+    }));
+
+  // Overall rates
+  const totalAttRecords = attendanceOverview.reduce((s, a) => s + a._count.id, 0);
+  const presentCount = attendanceOverview.find((a) => a.status === "PRESENT")?._count.id ?? 0;
+  const overallAttendanceRate = totalAttRecords > 0 ? Math.round((presentCount / totalAttRecords) * 100) : 0;
+
+  const totalDiploma = diplomaResultStats.reduce((s, d) => s + d._count.id, 0);
+  const passedCount = diplomaResultStats.find((d) => d.status === "PASSED")?._count.id ?? 0;
+  const diplomaPassRate = totalDiploma > 0 ? Math.round((passedCount / totalDiploma) * 100) : 0;
+
   return {
     overview: {
       totalStudents,
@@ -341,41 +450,35 @@ export const getAdminDashboard = async () => {
       totalPracticals,
       totalPracticalJobs,
       totalPracticalCombined: totalPracticals + totalPracticalJobs,
-      overallAttendanceRate: 0, // calculate if needed
-      diplomaPassRate: 0,       // calculate if needed
+      overallAttendanceRate,
+      diplomaPassRate,
     },
-
     breakdowns: {
-      studentsByDepartment: [], // add enrichment if needed
-      teachersByDepartment: [],
-      groupsByDepartment: [],
-      noticesByAudience: noticesByAudience.map((n: any) => ({ audienceType: n.audienceType, count: n._count.id })),
-      noticesByPriority: noticesByPriority.map((n: any) => ({ priority: n.priority, count: n._count.id })),
-      diplomaResults: diplomaResultStats.map((d: any) => ({ status: d.status, count: d._count.id })),
-      attendance: attendanceOverview.map((a: any) => ({ status: a.status, count: a._count.id })),
+      studentsByDepartment: enrichWithDept(studentsByDepartment),
+      teachersByDepartment: enrichWithDept(teachersByDepartment),
+      groupsByDepartment: enrichWithDept(groupsByDepartment),
+      noticesByAudience: noticesByAudience.map((n) => ({ audienceType: n.audienceType, count: n._count.id })),
+      noticesByPriority: noticesByPriority.map((n) => ({ priority: n.priority, count: n._count.id })),
+      diplomaResults: diplomaResultStats.map((d) => ({ status: d.status, count: d._count.id })),
+      attendance: attendanceOverview.map((a) => ({ status: a.status, count: a._count.id })),
     },
-
-    lastSemesterDiplomaResults: lastSemesterResults,   // ← Fixed here
-
+    lastSemesterDiplomaResults: lastSemesterResults,
     lastMonthAttendance,
-
     monthly: {
       attendance: monthlyAttendance,
       diplomaResults: monthlyDiplomaResults,
     },
-
     diplomaAnalysis: {
       bySemester,
       byYear,
-      gpaDistribution: diplomaGPADistribution.map((g: any) => ({
+      gpaDistribution: diplomaGPADistribution.map((g) => ({
         semesterName: g.semesterName,
-        avgGpa: g._avg.gpa1 ? Math.round(g._avg.gpa1 * 100) / 100 : null,
+        avgGpa: g._avg.gpa1 != null ? Math.round(g._avg.gpa1 * 100) / 100 : null,
         count: g._count.id,
       })),
       topReferredSubjects,
       topFailedSubjects,
     },
-
     recent: {
       notices: recentNotices,
       events: recentEvents,
@@ -383,15 +486,17 @@ export const getAdminDashboard = async () => {
   };
 };
 
+// ─────────────────────────────────────────────────────────────
+// Teacher Dashboard
+// ─────────────────────────────────────────────────────────────
+
 export const getTeacherDashboard = async (userId: number) => {
   const teacher = await prisma.teacher.findUnique({
     where: { userId, isDeleted: false },
     select: { id: true, departmentId: true },
   });
 
-  if (!teacher) {
-    throw new ApiError(httpStatus.NOT_FOUND, "Teacher not found");
-  }
+  if (!teacher) throw new ApiError(httpStatus.NOT_FOUND, "Teacher not found");
 
   const { id: teacherId, departmentId } = teacher;
   const months = getLast12Months();
@@ -410,29 +515,21 @@ export const getTeacherDashboard = async (userId: number) => {
       where: { teacherId, isDeleted: false },
       select: {
         id: true,
-        subject: {
-          select: { id: true, name: true, shortName: true, code: true },
-        },
+        subject: { select: { id: true, name: true, shortName: true, code: true } },
         group: { select: { id: true, name: true, session: true } },
         semester: { select: { id: true, name: true } },
         _count: { select: { practicals: true } },
       },
     }),
-
     prisma.student.count({
       where: {
         isDeleted: false,
         group: { subjectGroups: { some: { teacherId, isDeleted: false } } },
       },
     }),
-
     prisma.attendanceSession.count({ where: { teacherId, isDeleted: false } }),
-
     prisma.practical.findMany({
-      where: {
-        isDeleted: false,
-        subjectGroup: { teacherId, isDeleted: false },
-      },
+      where: { isDeleted: false, subjectGroup: { teacherId, isDeleted: false } },
       select: {
         id: true,
         title: true,
@@ -448,12 +545,9 @@ export const getTeacherDashboard = async (userId: number) => {
           },
         },
         _count: { select: { submissions: true } },
-        submissions: {
-          select: { submitted: true, obtainedMarks: true },
-        },
+        submissions: { select: { submitted: true, obtainedMarks: true } },
       },
     }),
-
     prisma.notice.findMany({
       where: { teacherId },
       orderBy: { createdAt: "desc" },
@@ -469,7 +563,6 @@ export const getTeacherDashboard = async (userId: number) => {
         student: { select: { id: true, name: true } },
       },
     }),
-
     prisma.attendanceSession.findMany({
       where: { teacherId, isDeleted: false },
       orderBy: { date: "desc" },
@@ -483,7 +576,6 @@ export const getTeacherDashboard = async (userId: number) => {
         _count: { select: { records: true } },
       },
     }),
-
     prisma.notice.findMany({
       where: {
         isPublished: true,
@@ -495,16 +587,8 @@ export const getTeacherDashboard = async (userId: number) => {
       },
       orderBy: { createdAt: "desc" },
       take: 5,
-      select: {
-        id: true,
-        title: true,
-        audienceType: true,
-        priority: true,
-        createdAt: true,
-      },
+      select: { id: true, title: true, audienceType: true, priority: true, createdAt: true },
     }),
-
-    // All attendance records for teacher's sessions (for rate calc)
     prisma.attendanceRecord.findMany({
       where: { session: { teacherId, isDeleted: false } },
       select: {
@@ -514,88 +598,59 @@ export const getTeacherDashboard = async (userId: number) => {
     }),
   ]);
 
-  // ── Monthly sessions taught ────────────────────────────────
+  // Monthly attendance
   const monthlySessions = await Promise.all(
     months.map(async (m) => {
       const [sessions, records] = await Promise.all([
         prisma.attendanceSession.count({
-          where: {
-            teacherId,
-            isDeleted: false,
-            date: { gte: m.start, lte: m.end },
-          },
+          where: { teacherId, isDeleted: false, date: { gte: m.start, lte: m.end } },
         }),
         prisma.attendanceRecord.groupBy({
           by: ["status"],
           where: { session: { teacherId, date: { gte: m.start, lte: m.end } } },
+          orderBy: { status: "asc" }, // FIX
           _count: { id: true },
         }),
       ]);
 
-      const present =
-        records.find((r) => r.status === "PRESENT")?._count.id ?? 0;
+      const present = records.find((r) => r.status === "PRESENT")?._count.id ?? 0;
       const absent = records.find((r) => r.status === "ABSENT")?._count.id ?? 0;
       const late = records.find((r) => r.status === "LATE")?._count.id ?? 0;
       const total = present + absent + late;
 
       return {
-        label: m.label,
-        year: m.year,
-        month: m.month,
-        sessions,
-        present,
-        absent,
-        late,
-        total,
+        label: m.label, year: m.year, month: m.month,
+        sessions, present, absent, late, total,
         attendanceRate: total > 0 ? Math.round((present / total) * 100) : 0,
       };
     }),
   );
 
-  // ── Monthly practicals given ───────────────────────────────
+  // Monthly practicals
   const monthlyPracticals = await Promise.all(
     months.map(async (m) => {
       const [given, submitted] = await Promise.all([
         prisma.practical.count({
-          where: {
-            isDeleted: false,
-            subjectGroup: { teacherId },
-            givenDate: { gte: m.start, lte: m.end },
-          },
+          where: { isDeleted: false, subjectGroup: { teacherId }, givenDate: { gte: m.start, lte: m.end } },
         }),
         prisma.practicalSubmission.count({
-          where: {
-            submitted: true,
-            practical: { subjectGroup: { teacherId } },
-            updatedAt: { gte: m.start, lte: m.end },
-          },
+          where: { submitted: true, practical: { subjectGroup: { teacherId } }, updatedAt: { gte: m.start, lte: m.end } },
         }),
       ]);
       return { label: m.label, year: m.year, month: m.month, given, submitted };
     }),
   );
 
-  // ── Per-subject attendance rate ────────────────────────────
-  const subjectMap: Record<
-    number,
-    {
-      name: string;
-      present: number;
-      absent: number;
-      late: number;
-    }
-  > = {};
-
+  // Per-subject attendance
+  const subjectMap: Record<number, { name: string; present: number; absent: number; late: number }> = {};
   for (const rec of attendanceRecords) {
     const sid = rec.session.subjectId;
-    if (!subjectMap[sid])
-      subjectMap[sid] = { name: "", present: 0, absent: 0, late: 0 };
+    if (!subjectMap[sid]) subjectMap[sid] = { name: "", present: 0, absent: 0, late: 0 };
     if (rec.status === "PRESENT") subjectMap[sid].present++;
     if (rec.status === "ABSENT") subjectMap[sid].absent++;
     if (rec.status === "LATE") subjectMap[sid].late++;
   }
 
-  // Enrich subject names
   const subjectIds = Object.keys(subjectMap).map(Number);
   const subjectList = await prisma.subject.findMany({
     where: { id: { in: subjectIds } },
@@ -606,18 +661,13 @@ export const getTeacherDashboard = async (userId: number) => {
     const data = subjectMap[s.id];
     const total = data.present + data.absent + data.late;
     return {
-      subjectId: s.id,
-      subjectName: s.name,
-      subjectShort: s.shortName,
-      present: data.present,
-      absent: data.absent,
-      late: data.late,
-      total,
+      subjectId: s.id, subjectName: s.name, subjectShort: s.shortName,
+      present: data.present, absent: data.absent, late: data.late, total,
       attendanceRate: total > 0 ? Math.round((data.present / total) * 100) : 0,
     };
   });
 
-  // ── Practical summary ──────────────────────────────────────
+  // Practical summary
   const practicalSummary = myPracticals.map((p) => {
     const totalSubmissions = p.submissions.length;
     const submitted = p.submissions.filter((s) => s.submitted).length;
@@ -629,26 +679,18 @@ export const getTeacherDashboard = async (userId: number) => {
               .reduce((sum, s) => sum + (s.obtainedMarks ?? 0), 0) / submitted,
           )
         : 0;
-
     return {
-      id: p.id,
-      title: p.title,
-      type: p.type,
-      totalMarks: p.totalMarks,
-      subject: p.subjectGroup.subject,
-      group: p.subjectGroup.group,
-      semester: p.subjectGroup.semester,
+      id: p.id, title: p.title, type: p.type, totalMarks: p.totalMarks,
+      subject: p.subjectGroup.subject, group: p.subjectGroup.group, semester: p.subjectGroup.semester,
       submissionDeadline: p.submissionDeadline,
-      totalStudents: totalSubmissions,
-      submitted,
-      pending: totalSubmissions - submitted,
-      submissionRate:
-        totalSubmissions > 0
-          ? Math.round((submitted / totalSubmissions) * 100)
-          : 0,
+      totalStudents: totalSubmissions, submitted, pending: totalSubmissions - submitted,
+      submissionRate: totalSubmissions > 0 ? Math.round((submitted / totalSubmissions) * 100) : 0,
       averageMarks: avgMarks,
     };
   });
+
+  const totalAtt = attendanceRecords.length;
+  const presentAtt = attendanceRecords.filter((r) => r.status === "PRESENT").length;
 
   return {
     overview: {
@@ -657,26 +699,14 @@ export const getTeacherDashboard = async (userId: number) => {
       totalSessionsTaken,
       totalPracticals: myPracticals.length,
       totalNoticesCreated: myNotices.length,
-      overallAttendanceRate: (() => {
-        const total = attendanceRecords.length;
-        const present = attendanceRecords.filter(
-          (r) => r.status === "PRESENT",
-        ).length;
-        return total > 0 ? Math.round((present / total) * 100) : 0;
-      })(),
+      overallAttendanceRate: totalAtt > 0 ? Math.round((presentAtt / totalAtt) * 100) : 0,
     },
     subjectGroups: mySubjectGroups,
     attendanceBySubject,
     practicalSummary,
-    monthly: {
-      attendance: monthlySessions,
-      practicals: monthlyPracticals,
-    },
+    monthly: { attendance: monthlySessions, practicals: monthlyPracticals },
     recentSessions,
-    recent: {
-      myNotices,
-      feedNotices,
-    },
+    recent: { myNotices, feedNotices },
   };
 };
 
@@ -688,16 +718,12 @@ export const getStudentDashboard = async (userId: number) => {
   const student = await prisma.student.findUnique({
     where: { userId, isDeleted: false },
     select: {
-      id: true,
-      groupId: true,
-      departmentId: true,
+      id: true, groupId: true, departmentId: true,
       group: { select: { currentSemesterId: true } },
     },
   });
 
-  if (!student) {
-    throw new ApiError(httpStatus.NOT_FOUND, "Student not found");
-  }
+  if (!student) throw new ApiError(httpStatus.NOT_FOUND, "Student not found");
 
   const { id: studentId, groupId, departmentId } = student;
   const semesterId = student.group?.currentSemesterId;
@@ -712,35 +738,27 @@ export const getStudentDashboard = async (userId: number) => {
     feedNotices,
     recentAttendance,
   ] = await prisma.$transaction([
-    prisma.attendanceSession.count({
-      where: { groupId, semesterId, isDeleted: false },
-    }),
+    prisma.attendanceSession.count({ where: { groupId, semesterId, isDeleted: false } }),
 
+    // FIX TS2345
     prisma.attendanceRecord.groupBy({
       by: ["status"],
       where: { studentId, session: { isDeleted: false } },
+      orderBy: { status: "asc" }, // FIX
       _count: { id: true },
     }),
 
     prisma.practicalSubmission.findMany({
       where: { studentId },
       select: {
-        id: true,
-        submitted: true,
-        obtainedMarks: true,
+        id: true, submitted: true, obtainedMarks: true,
         practical: {
           select: {
-            id: true,
-            title: true,
-            type: true,
-            totalMarks: true,
-            submissionDeadline: true,
-            givenDate: true,
+            id: true, title: true, type: true, totalMarks: true,
+            submissionDeadline: true, givenDate: true,
             subjectGroup: {
               select: {
-                subject: {
-                  select: { id: true, name: true, shortName: true, code: true },
-                },
+                subject: { select: { id: true, name: true, shortName: true, code: true } },
                 semester: { select: { id: true, name: true } },
               },
             },
@@ -753,19 +771,9 @@ export const getStudentDashboard = async (userId: number) => {
       where: { studentId, isDeleted: false },
       orderBy: { semesterName: "asc" },
       select: {
-        id: true,
-        semesterName: true,
-        examYear: true,
-        status: true,
-        gpa1: true,
-        gpa2: true,
-        gpa3: true,
-        gpa4: true,
-        gpa5: true,
-        gpa6: true,
-        gpa7: true,
-        referredSubjects: true,
-        failedSubjects: true,
+        id: true, semesterName: true, examYear: true, status: true,
+        gpa1: true, gpa2: true, gpa3: true, gpa4: true, gpa5: true, gpa6: true, gpa7: true,
+        referredSubjects: true, failedSubjects: true,
       },
     }),
 
@@ -774,12 +782,8 @@ export const getStudentDashboard = async (userId: number) => {
       orderBy: { createdAt: "desc" },
       take: 5,
       select: {
-        id: true,
-        title: true,
-        audienceType: true,
-        priority: true,
-        isPublished: true,
-        createdAt: true,
+        id: true, title: true, audienceType: true, priority: true,
+        isPublished: true, createdAt: true,
         group: { select: { id: true, name: true } },
       },
     }),
@@ -792,21 +796,12 @@ export const getStudentDashboard = async (userId: number) => {
           { audienceType: "STUDENT", studentId },
           { audienceType: "GROUP", groupId },
           { audienceType: "DEPARTMENT", departmentId },
-          ...(semesterId
-            ? [{ audienceType: "SEMESTER" as const, semesterId }]
-            : []),
+          ...(semesterId ? [{ audienceType: "SEMESTER" as const, semesterId }] : []),
         ],
       },
       orderBy: { createdAt: "desc" },
       take: 5,
-      select: {
-        id: true,
-        title: true,
-        audienceType: true,
-        priority: true,
-        isPinned: true,
-        createdAt: true,
-      },
+      select: { id: true, title: true, audienceType: true, priority: true, isPinned: true, createdAt: true },
     }),
 
     prisma.attendanceRecord.findMany({
@@ -814,8 +809,7 @@ export const getStudentDashboard = async (userId: number) => {
       orderBy: { createdAt: "desc" },
       take: 10,
       select: {
-        id: true,
-        status: true,
+        id: true, status: true,
         session: {
           select: {
             date: true,
@@ -826,203 +820,127 @@ export const getStudentDashboard = async (userId: number) => {
     }),
   ]);
 
-  // ── Monthly attendance ─────────────────────────────────────
+  // Monthly attendance
   const monthlyAttendance = await Promise.all(
     months.map(async (m) => {
       const records = await prisma.attendanceRecord.groupBy({
         by: ["status"],
-        where: {
-          studentId,
-          session: { date: { gte: m.start, lte: m.end }, isDeleted: false },
-        },
+        where: { studentId, session: { date: { gte: m.start, lte: m.end }, isDeleted: false } },
+        orderBy: { status: "asc" }, // FIX
         _count: { id: true },
       });
 
-      const present =
-        records.find((r) => r.status === "PRESENT")?._count.id ?? 0;
+      const present = records.find((r) => r.status === "PRESENT")?._count.id ?? 0;
       const absent = records.find((r) => r.status === "ABSENT")?._count.id ?? 0;
       const late = records.find((r) => r.status === "LATE")?._count.id ?? 0;
       const total = present + absent + late;
 
       return {
-        label: m.label,
-        year: m.year,
-        month: m.month,
-        present,
-        absent,
-        late,
-        total,
+        label: m.label, year: m.year, month: m.month,
+        present, absent, late, total,
         attendanceRate: total > 0 ? Math.round((present / total) * 100) : 0,
       };
     }),
   );
 
-  // ── Monthly practicals ─────────────────────────────────────
+  // Monthly practicals
   const monthlyPracticals = await Promise.all(
     months.map(async (m) => {
       const [total, submitted] = await Promise.all([
         prisma.practicalSubmission.count({
-          where: {
-            studentId,
-            practical: { givenDate: { gte: m.start, lte: m.end } },
-          },
+          where: { studentId, practical: { givenDate: { gte: m.start, lte: m.end } } },
         }),
         prisma.practicalSubmission.count({
-          where: {
-            studentId,
-            submitted: true,
-            practical: { givenDate: { gte: m.start, lte: m.end } },
-          },
+          where: { studentId, submitted: true, practical: { givenDate: { gte: m.start, lte: m.end } } },
         }),
       ]);
       return {
-        label: m.label,
-        year: m.year,
-        month: m.month,
-        total,
-        submitted,
-        pending: total - submitted,
+        label: m.label, year: m.year, month: m.month,
+        total, submitted, pending: total - submitted,
         submissionRate: total > 0 ? Math.round((submitted / total) * 100) : 0,
       };
     }),
   );
 
-  // ── Monthly marks average ──────────────────────────────────
+  // Monthly marks
   const monthlyMarks = await Promise.all(
     months.map(async (m) => {
       const subs = await prisma.practicalSubmission.findMany({
         where: {
-          studentId,
-          submitted: true,
-          obtainedMarks: { not: null },
+          studentId, submitted: true, obtainedMarks: { not: null },
           practical: { givenDate: { gte: m.start, lte: m.end } },
         },
-        select: {
-          obtainedMarks: true,
-          practical: { select: { totalMarks: true } },
-        },
+        select: { obtainedMarks: true, practical: { select: { totalMarks: true } } },
       });
 
       const obtained = subs.reduce((s, p) => s + (p.obtainedMarks ?? 0), 0);
       const available = subs.reduce((s, p) => s + p.practical.totalMarks, 0);
 
       return {
-        label: m.label,
-        year: m.year,
-        month: m.month,
-        obtained,
-        available,
-        percentage:
-          available > 0 ? Math.round((obtained / available) * 100) : 0,
+        label: m.label, year: m.year, month: m.month,
+        obtained, available,
+        percentage: available > 0 ? Math.round((obtained / available) * 100) : 0,
       };
     }),
   );
 
-  // ── Attendance summary ─────────────────────────────────────
-  const present =
-    attendanceSummaryRaw.find((r) => r.status === "PRESENT")?._count.id ?? 0;
-  const absent =
-    attendanceSummaryRaw.find((r) => r.status === "ABSENT")?._count.id ?? 0;
-  const late =
-    attendanceSummaryRaw.find((r) => r.status === "LATE")?._count.id ?? 0;
+  // Attendance summary
+  // FIX TS2532 / TS2339 – use _count.id directly (typed correctly now that groupBy has orderBy)
+  const present = attendanceSummaryRaw.find((r) => r.status === "PRESENT")?._count.id ?? 0;
+  const absent = attendanceSummaryRaw.find((r) => r.status === "ABSENT")?._count.id ?? 0;
+  const late = attendanceSummaryRaw.find((r) => r.status === "LATE")?._count.id ?? 0;
   const totalRecorded = present + absent + late;
 
   const attendanceSummary = {
-    present,
-    absent,
-    late,
-    totalSessions,
-    totalRecorded,
-    attendanceRate:
-      totalSessions > 0 ? Math.round((present / totalSessions) * 100) : 0,
+    present, absent, late, totalSessions, totalRecorded,
+    attendanceRate: totalSessions > 0 ? Math.round((present / totalSessions) * 100) : 0,
   };
 
-  // ── Practical summary ──────────────────────────────────────
+  // Practical summary
+  const totalAvail = practicalSubmissions.reduce((s, p) => s + p.practical.totalMarks, 0);
+  const totalObt = practicalSubmissions.reduce((s, p) => s + (p.obtainedMarks ?? 0), 0);
   const practicalSummary = {
     total: practicalSubmissions.length,
     submitted: practicalSubmissions.filter((p) => p.submitted).length,
     pending: practicalSubmissions.filter((p) => !p.submitted).length,
-    totalObtained: practicalSubmissions.reduce(
-      (s, p) => s + (p.obtainedMarks ?? 0),
-      0,
-    ),
-    totalAvailable: practicalSubmissions.reduce(
-      (s, p) => s + p.practical.totalMarks,
-      0,
-    ),
-    overallPercentage: (() => {
-      const avail = practicalSubmissions.reduce(
-        (s, p) => s + p.practical.totalMarks,
-        0,
-      );
-      const obt = practicalSubmissions.reduce(
-        (s, p) => s + (p.obtainedMarks ?? 0),
-        0,
-      );
-      return avail > 0 ? Math.round((obt / avail) * 100) : 0;
-    })(),
+    totalObtained: totalObt,
+    totalAvailable: totalAvail,
+    overallPercentage: totalAvail > 0 ? Math.round((totalObt / totalAvail) * 100) : 0,
   };
 
-  // ── GPA trend ──────────────────────────────────────────────
+  // GPA trend
   const gpaTrend = diplomaResults.map((r) => {
-    const gpas = [
-      r.gpa1,
-      r.gpa2,
-      r.gpa3,
-      r.gpa4,
-      r.gpa5,
-      r.gpa6,
-      r.gpa7,
-    ].filter((g): g is number => g !== null && g !== undefined);
+    const gpas = [r.gpa1, r.gpa2, r.gpa3, r.gpa4, r.gpa5, r.gpa6, r.gpa7].filter(
+      (g): g is number => g !== null && g !== undefined,
+    );
     const avg =
       gpas.length > 0
-        ? Math.round((gpas.reduce((s, g) => s + g, 0) / gpas.length) * 100) /
-          100
+        ? Math.round((gpas.reduce((s, g) => s + g, 0) / gpas.length) * 100) / 100
         : null;
     return {
-      semesterName: r.semesterName,
-      examYear: r.examYear,
-      status: r.status,
-      averageGpa: avg,
-      referredSubjects: r.referredSubjects,
-      failedSubjects: r.failedSubjects,
+      semesterName: r.semesterName, examYear: r.examYear, status: r.status,
+      averageGpa: avg, referredSubjects: r.referredSubjects, failedSubjects: r.failedSubjects,
     };
   });
 
-  // ── Per-subject attendance breakdown ──────────────────────
-  const subjectAttendance = await prisma.attendanceRecord.groupBy({
-    by: ["status"],
-    where: { studentId },
-    _count: { id: true },
-  });
-
+  // Per-subject attendance
   const attendanceBySubjectRaw = await prisma.attendanceRecord.findMany({
     where: { studentId },
     select: {
       status: true,
-      session: {
-        select: {
-          subject: { select: { id: true, name: true, shortName: true } },
-        },
-      },
+      session: { select: { subject: { select: { id: true, name: true, shortName: true } } } },
     },
   });
 
   const subjectBreakdown: Record<
     number,
-    {
-      subject: { id: number; name: string; shortName: string };
-      present: number;
-      absent: number;
-      late: number;
-    }
+    { subject: { id: number; name: string; shortName: string }; present: number; absent: number; late: number }
   > = {};
 
   for (const rec of attendanceBySubjectRaw) {
     const s = rec.session.subject;
-    if (!subjectBreakdown[s.id]) {
+    if (!subjectBreakdown[s.id])
       subjectBreakdown[s.id] = { subject: s, present: 0, absent: 0, late: 0 };
-    }
     if (rec.status === "PRESENT") subjectBreakdown[s.id].present++;
     if (rec.status === "ABSENT") subjectBreakdown[s.id].absent++;
     if (rec.status === "LATE") subjectBreakdown[s.id].late++;
@@ -1030,11 +948,7 @@ export const getStudentDashboard = async (userId: number) => {
 
   const attendanceBySubject = Object.values(subjectBreakdown).map((s) => {
     const total = s.present + s.absent + s.late;
-    return {
-      ...s,
-      total,
-      attendanceRate: total > 0 ? Math.round((s.present / total) * 100) : 0,
-    };
+    return { ...s, total, attendanceRate: total > 0 ? Math.round((s.present / total) * 100) : 0 };
   });
 
   return {
@@ -1042,33 +956,14 @@ export const getStudentDashboard = async (userId: number) => {
       attendanceRate: attendanceSummary.attendanceRate,
       practicalScore: practicalSummary.overallPercentage,
       totalDiplomaResults: diplomaResults.length,
-      latestGpa:
-        gpaTrend.length > 0 ? gpaTrend[gpaTrend.length - 1].averageGpa : null,
-      latestDiplomaStatus:
-        gpaTrend.length > 0 ? gpaTrend[gpaTrend.length - 1].status : null,
+      latestGpa: gpaTrend.length > 0 ? gpaTrend[gpaTrend.length - 1].averageGpa : null,
+      latestDiplomaStatus: gpaTrend.length > 0 ? gpaTrend[gpaTrend.length - 1].status : null,
     },
-    attendance: {
-      summary: attendanceSummary,
-      bySubject: attendanceBySubject,
-      recent: recentAttendance,
-    },
-    practicals: {
-      summary: practicalSummary,
-      submissions: practicalSubmissions,
-    },
-    diploma: {
-      gpaTrend,
-      results: diplomaResults,
-    },
-    monthly: {
-      attendance: monthlyAttendance,
-      practicals: monthlyPracticals,
-      marks: monthlyMarks,
-    },
-    recent: {
-      myNotices,
-      feedNotices,
-    },
+    attendance: { summary: attendanceSummary, bySubject: attendanceBySubject, recent: recentAttendance },
+    practicals: { summary: practicalSummary, submissions: practicalSubmissions },
+    diploma: { gpaTrend, results: diplomaResults },
+    monthly: { attendance: monthlyAttendance, practicals: monthlyPracticals, marks: monthlyMarks },
+    recent: { myNotices, feedNotices },
   };
 };
 
