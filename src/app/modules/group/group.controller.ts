@@ -21,6 +21,8 @@ const getAllGroups = catchAsync(async (req: Request, res: Response) => {
 
   const result = await groupService.getAllGroups(filters, paginationOptions);
 
+  console.log(result);
+
   sendResponse(res, {
     statusCode: httpStatus.OK,
     success: true,

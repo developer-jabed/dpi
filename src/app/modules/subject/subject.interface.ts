@@ -14,6 +14,7 @@ export interface TSubjectUpdate {
   name?:         string;
   shortName?:    string;
   code?:         string;
+  credits?: number;
   semesterId?:   number;
   departmentId?: number;
   totalClasses?: number;

@@ -1,10 +1,9 @@
-
 import { Request, Response } from 'express';
 import httpStatus from 'http-status';
 import catchAsync from '../../shared/catchAsync';
 import sendResponse from '../../shared/sendResponse';
-import { resultParserService } from './resultParser.service';
 import ApiError from '../../errors/api.error';
+import { resultParserService } from './resultParser.service';
 
 interface UploadRequest extends Request {
   file?: Express.Multer.File;
@@ -29,21 +28,36 @@ const uploadAndParseResultPDF = catchAsync(async (req: UploadRequest, res: Respo
     );
   }
 
-  console.log(`[Upload] File received: ${req.file.mimetype}, size: ${req.file.buffer?.length} bytes`);
+  console.log(
+    `[Upload] File received: ${req.file.mimetype}, size: ${fileBuffer.length} bytes | name: ${req.file.originalname}`,
+  );
 
-  const parseResult = await resultParserService.parsePDFBuffer(fileBuffer);
+  // 1. Parse PDF
+  const parseResult = await resultParserService.parseResultPdf(
+    fileBuffer,
+    req.file.originalname, // important for regulation detection
+  );
+
   console.log(`[Parser] Total parsed: ${parseResult.totalParsed}`);
 
-  const { savedCount } = await resultParserService.saveParsedResults(parseResult.students);
-  console.log(`[DB] Total saved: ${savedCount}`);
+  // 2. Save to DB + cache invalidate + warm
+  const saveResult = await resultParserService.saveParsedResults(parseResult);
+
+  console.log(
+    `[DB] saved=${saveResult.savedCount} | linked=${saveResult.linkedCount} | orphan=${saveResult.orphanCount}`,
+  );
 
   sendResponse(res, {
     statusCode: httpStatus.OK,
     success: true,
-    message: `Parsed ${parseResult.totalParsed} records, saved ${savedCount} to database`,
+    message: `Parsed ${parseResult.totalParsed} records, saved ${saveResult.savedCount} to database`,
     data: {
       parsedCount: parseResult.totalParsed,
-      savedCount,
+      savedCount: saveResult.savedCount,
+      linkedCount: saveResult.linkedCount,
+      orphanCount: saveResult.orphanCount,
+      orphanRolls: saveResult.orphanRolls.slice(0, 20),
+      meta: parseResult.meta,
       sample: parseResult.students.slice(0, 5),
     },
   });

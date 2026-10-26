@@ -1,43 +1,41 @@
 import express, { NextFunction, Request, Response } from 'express';
 import { subjectController } from './subject.controller';
 
-
 const router = express.Router();
+
+// ── Create ────────────────────────────────────────────────────────────────────
 router.post(
   '/',
   (req: Request, res: Response, next: NextFunction) => {
- 
     if (req.body && req.body.data) {
-      console.log('Found "data" field in FormData');
       try {
-        const parsedData = JSON.parse(req.body.data);
-        req.body = parsedData;
+        req.body = JSON.parse(req.body.data);
       } catch (err: any) {
-        console.error("❌ Failed to parse 'data' as JSON:", err.message);
-        console.log("Raw 'data' value was:", req.body.data);
+        console.error("Failed to parse 'data' as JSON:", err.message);
       }
     }
-  
-    else {
-      console.log("⚠️ req.body is empty or undefined");
-    }
-
-
-    next(); 
+    next();
   },
   subjectController.createSubject
 );
 
+// ── List (with filters: semesterId, departmentId, searchTerm, page…) ──────────
 router.get('/', subjectController.getAllSubjects);
 
-router.get('/:id', subjectController.getSingleSubject);
+// ── Semester-wise book list (grouped) ─────────────────────────────────────────
+// GET /subjects/books/grouped?departmentId=1&searchTerm=math
+router.get('/books/grouped', subjectController.getGroupedBooks);
 
-router.patch(
-  '/:id',
-
-  subjectController.updateSubject
+// ── Books of one semester ─────────────────────────────────────────────────────
+// GET /subjects/books/semester/3?departmentId=1
+router.get(
+  '/books/semester/:semesterId',
+  subjectController.getBooksBySemester
 );
 
+// ── Single & update (keep these last) ─────────────────────────────────────────
+router.get('/:id', subjectController.getSingleSubject);
 
+router.patch('/:id', subjectController.updateSubject);
 
 export const subjectRoutes = router;

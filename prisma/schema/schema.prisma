@@ -35,6 +35,61 @@ enum DiplomaResultStatus {
   WITHHELD
 }
 
+enum SubjectResultType {
+  REFERRED
+  FAILED
+}
+
+// ─────────────────────────────────────────────
+// NEW: tracks a student's real academic standing
+// per semester, per attempt. This is the source
+// of truth for "which semester is this student
+// actually in right now", independent of which
+// batch/Group they originally started with.
+// ─────────────────────────────────────────────
+enum EnrollmentStatus {
+  ONGOING    // currently studying this semester, result pending
+  PASSED     // completed this semester successfully
+  RETAKING   // failed threshold (>=4 referred/failed), repeating
+  DROPPED    // enrollment abandoned/superseded (e.g. rolled back to a lower semester)
+}
+
+model StudentEnrollment {
+  id              Int              @id @default(autoincrement())
+
+  studentId       Int
+  student         Student          @relation(fields: [studentId], references: [id])
+
+  semesterId      Int
+  semester        Semester         @relation(fields: [semesterId], references: [id])
+
+  groupId         Int              // which group/batch/session the student sat this semester with
+  group           Group            @relation(fields: [groupId], references: [id])
+
+  attemptNumber   Int              @default(1)   // 1st attempt, 2nd (retake), 3rd...
+  status          EnrollmentStatus @default(ONGOING)
+
+  resultId        Int?             @unique
+  result          DiplomaResult?   @relation(fields: [resultId], references: [id])
+
+  startedAt       DateTime         @default(now())
+  endedAt         DateTime?
+
+  isDeleted       Boolean          @default(false)
+  createdAt       DateTime         @default(now())
+  updatedAt       DateTime         @updatedAt
+
+  attendanceSessions AttendanceSession[]
+  attendanceRecords  AttendanceRecord[]
+  practicalSubmissions PracticalSubmission[]
+
+  @@unique([studentId, semesterId, attemptNumber])
+  @@index([studentId])
+  @@index([semesterId])
+  @@index([groupId])
+  @@index([status])
+}
+
 model Department {
   id        Int      @id @default(autoincrement())
   name      String   @unique
@@ -76,8 +131,10 @@ model Semester {
   subjects           Subject[]
   subjectGroups      SubjectGroup[]
   attendanceSessions AttendanceSession[]
-  diplomaResults DiplomaResult[]
-  notices Notice[]
+  diplomaResults     DiplomaResult[]
+  notices            Notice[]
+  enrollments        StudentEnrollment[]   // NEW
+  studentsCurrent    Student[]          @relation("StudentCurrentSemester") 
 }
 
 model Group {
@@ -101,8 +158,9 @@ model Group {
   students           Student[]          @relation("GroupStudents")
   subjectGroups      SubjectGroup[]
   attendanceSessions AttendanceSession[]
-  diplomaResults DiplomaResult[]
-  notices Notice[]
+  diplomaResults     DiplomaResult[]
+  notices            Notice[]
+  enrollments        StudentEnrollment[]   // NEW
 }
 
 
@@ -130,7 +188,7 @@ model Teacher {
 model Student {
   id               Int      @id @default(autoincrement())
   userId           Int      @unique
-  groupId          Int
+  groupId          Int              // home/original batch — used for identity, routine, CR eligibility etc.
   departmentId     Int
   name             String
   email            String   @unique
@@ -148,6 +206,12 @@ model Student {
   presentAddress   String
   permanentAddress String
   profilePhoto     String?
+
+
+  currentSemesterId Int?
+  currentSemester   Semester? @relation("StudentCurrentSemester", fields: [currentSemesterId], references: [id])
+  currentAttempt    Int       @default(1)
+
   isDeleted        Boolean  @default(false)
   createdAt        DateTime @default(now())
   updatedAt        DateTime @updatedAt
@@ -162,6 +226,7 @@ model Student {
   practicalSubmissions PracticalSubmission[]
   events Event[] @relation("StudentEvents")
   notices Notice[]
+  enrollments StudentEnrollment[]   // NEW — full history of every semester attempt
 }
 
 model Admin {
@@ -193,6 +258,7 @@ model Subject {
   department         Department         @relation(fields: [departmentId], references: [id])
   subjectGroups      SubjectGroup[]
   attendanceSessions AttendanceSession[]
+   diplomaResultSubjects DiplomaResultSubject[] 
  
 }
 
@@ -272,6 +338,12 @@ model PracticalSubmission {
   studentId   Int
   obtainedMarks Int?
   submitted   Boolean           @default(false)
+
+  // NEW: ties this submission to a specific enrollment attempt,
+  // so a retake's practicals never merge with the failed attempt's.
+  enrollmentId Int?
+  enrollment   StudentEnrollment? @relation(fields: [enrollmentId], references: [id])
+
   createdAt   DateTime          @default(now())
   updatedAt   DateTime          @updatedAt
 
@@ -279,6 +351,7 @@ model PracticalSubmission {
   student     Student           @relation(fields: [studentId], references: [id])
 
   @@unique([practicalId, studentId])
+  @@index([enrollmentId])
 }
 
 enum PracticalType {
@@ -310,9 +383,16 @@ model AttendanceSession {
   subject  Subject  @relation(fields: [subjectId], references: [id])
   teacher  Teacher? @relation(fields: [teacherId], references: [id])
 
+  // NEW: optional link — lets you scope a session to a specific
+  // enrollment cohort when a retaking student sits in on a
+  // session that belongs to a different group's routine.
+  enrollmentId Int?
+  enrollment   StudentEnrollment? @relation(fields: [enrollmentId], references: [id])
+
   records AttendanceRecord[]
 
   @@unique([groupId, subjectId, semesterId, date])
+  @@index([enrollmentId])
 }
 
 
@@ -329,11 +409,20 @@ model AttendanceRecord {
   attendanceSessionId Int
   studentId           Int
   status              AttendanceStatus
+
+  // NEW: which attempt/enrollment this record counts toward.
+  // Critical: this is what lets a retaking student's attendance
+  // start clean for the repeated semester, while attempt-1's
+  // attendance stays intact for records/audit.
+  enrollmentId        Int?
+  enrollment          StudentEnrollment? @relation(fields: [enrollmentId], references: [id])
+
   createdAt           DateTime         @default(now())
   updatedAt           DateTime         @updatedAt
   session AttendanceSession @relation(fields: [attendanceSessionId], references: [id])
   student Student           @relation(fields: [studentId], references: [id])
   @@unique([attendanceSessionId, studentId])
+  @@index([enrollmentId])
 }
 
 
@@ -419,23 +508,21 @@ model ClassRoutine {
   @@unique([groupId, dayOfWeek, period])  // One subject per slot
 }
 
-
 model DiplomaResult {
   id            Int                 @id @default(autoincrement())
- 
+
   studentId     Int?
   student       Student?            @relation(fields: [studentId], references: [id])
-
   semesterId    Int?
   semester      Semester?           @relation(fields: [semesterId], references: [id])
- 
+
   groupId       Int?
   group         Group?              @relation(fields: [groupId], references: [id])
 
-  roll          String              
+  roll          String
   instituteCode String              // e.g. "13085"
   instituteName String              // e.g. "Dinajpur Polytechnic Institute"
-  semesterName  String              // e.g. "3rd"  ← raw string kept for reference
+  semesterName  String              // e.g. "3rd"
   examYear      Int                 // e.g. 2024
   regulation    String              // e.g. "2022"
   status        DiplomaResultStatus
@@ -450,16 +537,45 @@ model DiplomaResult {
 
   referredSubjects String[]         @default([])
   failedSubjects   String[]         @default([])
- 
+
+  subjectBreakdown DiplomaResultSubject[]
+  enrollment       StudentEnrollment?
+
   isDeleted     Boolean             @default(false)
   createdAt     DateTime            @default(now())
   updatedAt     DateTime            @updatedAt
 
+  // Unique constraint
   @@unique([roll, semesterName, examYear, regulation])
+
+  // ── Optimized Indexes ──
+  @@index([roll, isDeleted])                    // Main lookup (getResultByRoll)
+  @@index([roll, examYear(sort: Desc)])         // Ordered results by year
   @@index([studentId])
   @@index([semesterId])
   @@index([groupId])
-  @@index([roll])
-  @@index([instituteCode])
+  @@index([instituteCode, isDeleted])           // Filter by institute
+  @@index([status])
+  @@index([examYear])
+}
 
+model DiplomaResultSubject {
+  id              Int               @id @default(autoincrement())
+
+  diplomaResultId Int
+  diplomaResult   DiplomaResult     @relation(fields: [diplomaResultId], references: [id], onDelete: Cascade)
+
+  subjectId       Int?
+  subject         Subject?          @relation(fields: [subjectId], references: [id])
+
+  subjectCode     String            // e.g. "25921"
+  type            SubjectResultType // REFERRED or FAILED
+
+  createdAt       DateTime          @default(now())
+
+  @@index([diplomaResultId])
+  @@index([subjectId])
+  @@index([subjectCode])
+  @@index([type])
+  @@index([diplomaResultId, type])              // Faster filtering of referred/failed
 }

@@ -187,8 +187,8 @@ const getMe = async (user: any) => {
             id: true,
             email: true,
             role: true,
-            needPasswordChange: true,   // ← was needPasswordChange
-            isDeleted: true,        // ← was status
+            needPasswordChange: true,  
+            isDeleted: true,       
             createdAt: true,
             updatedAt: true,
 

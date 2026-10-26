@@ -17,6 +17,8 @@ import { eventRoutes } from '../modules/event/event.route';
 import { noticeRoutes } from '../modules/notice/notice.route';
 import { dashboardRoutes } from '../modules/meta/meta.route';
 import { routineRoutes } from '../modules/routine/routine.route';
+import { groupResultPdfRoutes } from '../modules/groupResultPdf/groupResultPdf.route';
+import { enrollmentRoutes } from '../modules/enrollment/enrollment.route';
 
 const router = express.Router();
 
@@ -92,6 +94,15 @@ const moduleRoutes = [
 {
   path: "/routine",
   route: routineRoutes
+},
+{
+  path : '/group-result-pdf',
+  route: groupResultPdfRoutes
+},
+
+{
+  path : '/enrollments',
+  route: enrollmentRoutes
 }
 
 ];

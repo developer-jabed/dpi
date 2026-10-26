@@ -1,61 +1,10 @@
 /**
  * resultParser.service.ts
- *
- * BTEB (Bangladesh Technical Education Board) — Diploma Result Parser
- * Institute : Dinajpur Polytechnic Institute (code: 13085)
- *
- * Supported statuses : PASSED | REFERRED | FAILED
- * Save strategy      : upsert — create on first upload, update on re-upload
- *
- * ─── Real BTEB PDF record formats ────────────────────────────────────────────
- *
- *  PASSED (variable gpa fields depending on semester)
- *    634501 (gpa3: 3.50, gpa2: 3.25, gpa1: 3.10)
- *    634502 (gpa3: 3.10, gpa2:, gpa1: 2.95)                     ← gpa2 may be empty
- *    802810 (gpa4: 3.58, gpa3: 3.81, gpa2: 3.61, gpa1: 3.48)    ← 4th sem+
- *
- *  REFERRED with gpa fields
- *    800065 { gpa3: ref, gpa2: ref, gpa1: 3.07, ref_sub: 25921(T) }
- *    802810 { gpa4: 3.10, gpa3: ref, gpa2: 2.75, gpa1: 3.00, ref_sub: 66711(T) }
- *
- *  REFERRED without gpa (early semesters, fewer than 4 subjects failed)
- *    634503{25921(T)}
- *    634503 { 25921(T), 25931(T) }
- *
- *  FAILED (4 or more subjects failed in a single semester → dropout)
- *    634503 { 66711(T,P) 66712(P) 66713(T) 66714(T) }
- *
- * ─── Classification rule (no-gpa braced records) ─────────────────────────────
- *
- *  When a braced record has no gpa fields, subject codes are counted:
- *    • subject count >= 4  → DiplomaResultStatus.FAILED  (dropout)
- *    • subject count <  4  → DiplomaResultStatus.REFERRED
- *
- *  Records with gpa fields are always REFERRED regardless of subject count,
- *  because the board has already computed a cumulative GPA for them.
- *
- * ─── Root cause of the PASSED-skipping bug ───────────────────────────────────
- *
- *  pdf-parse frequently splits a single PASSED record across two physical lines:
- *
- *    Line 1: "802810"
- *    Line 2: "(gpa4: 3.58, gpa3: 3.81, gpa2: 3.61, gpa1: 3.48)"
- *
- *  OR:
- *    Line 1: "802810 (gpa4: 3.58,"
- *    Line 2: "gpa3: 3.81, gpa2: 3.61, gpa1: 3.48)"
- *
- *  The previous joinContinuationLines() only buffered open-BRACE `{` records.
- *  Open-PAREN `(` PASSED records were never buffered, so both halves were
- *  emitted as standalone lines that matched nothing and were silently dropped.
- *
- *  Fix: joinContinuationLines() now also buffers:
- *    1. A bare roll number (no paren, no brace) → expects `(gpa...)` on next line
- *    2. A roll + open paren with no closing paren → join until `)` appears
- * ─────────────────────────────────────────────────────────────────────────────
+ * Unified parser – supports both 1st Semester (simple) and 2nd+ Semester (labeled) formats
+ * Target: Dinajpur Polytechnic Institute (13085)
  */
 
-import { DiplomaResultStatus } from '@prisma/client';
+import { DiplomaResultStatus, SubjectResultType } from '@prisma/client';
 import httpStatus from 'http-status';
 import ApiError from '../../errors/api.error';
 import { prisma } from '../../shared/prisma';
@@ -65,614 +14,590 @@ import type {
   ParseResult,
   SaveResult,
 } from './resultParser.interface';
+import { resultQueryService } from '../result/result.service';
 
 // ─── Constants ────────────────────────────────────────────────────────────────
-
 const TARGET_INSTITUTE_CODE = '13085' as const;
 const DB_CHUNK_SIZE = 100;
-const DB_CHUNK_CONCURRENCY = 10;
-
-/**
- * Minimum number of failed subjects in a single semester to classify a student
- * as FAILED (dropout) rather than REFERRED.
- */
+const DB_CHUNK_CONCURRENCY = 8;
 const DROPOUT_SUBJECT_THRESHOLD = 4;
+const CACHE_WARM_CONCURRENCY = 10;
 
 const SEMESTER_LABEL: Readonly<Record<string, string>> = {
-  '1': '1st', '2': '2nd', '3': '3rd', '4': '4th',
-  '5': '5th', '6': '6th', '7': '7th', '8': '8th',
+  '1': '1st',
+  '2': '2nd',
+  '3': '3rd',
+  '4': '4th',
+  '5': '5th',
+  '6': '6th',
+  '7': '7th',
+  '8': '8th',
 };
 
-const GPA_LABELS = ['gpa7', 'gpa6', 'gpa5', 'gpa4', 'gpa3', 'gpa2', 'gpa1'] as const;
-type GpaLabel = (typeof GPA_LABELS)[number];
-
-// ─── Regex catalogue ──────────────────────────────────────────────────────────
-
+// ─── Regex Catalogue ──────────────────────────────────────────────────────────
 const RE = {
-  /** Strips "Page N of NNNN" pdf-parse artifact fused onto line start */
-  pagePrefix: /^Page\s+\d+\s+of\s+\d+\s*/,
+  institute: /^(\d{5})\s*[-–]\s*(.+?)(?:,|$)/i,
 
-  /** "13085 - Dinajpur Polytechnic Institute" — never fires on data lines */
-  instituteHeader: /^(\d{5})\s*-\s*(.+)$/,
+  sectionPassed: /^\s*1\s*$/,
+  sectionReferred: /^\s*2\s*$/,
+  sectionFailed: /^\s*25\s*$/,
+  sectionPassedText: /passed in all subjects/i,
+  sectionReferredText: /failed in three or less subjects/i,
+  sectionFailedText: /failed in four or more subjects/i,
 
-  /** PASSED line: roll followed anywhere by "(gpaN:" */
-  passedLine: /\d{5,7}\s*\(\s*gpa\d\s*:/,
+  semester: /(\d)(?:st|nd|rd|th)\s+Semester/i,
+  examYearNear: /(?:Examination|Result|held).*?(20\d{2})/i,
+  regulation: /(?:Regulation|Reg\.)\s*[:\s]*(\d{4})/i,
+  yearAny: /\b(20\d{2})\b/g,
 
-  /**
-   * PASSED record extractor.
-   * `[^()]+` — no nested parens allowed inside the gpa block.
-   * Gpa blocks never contain parens; subject codes like "(T)" do → clean separation.
-   */
-  passedRecord: /(\d{5,7})\s*\(([^()]+)\)/g,
+  // Format A – 1st semester simple
+  passedSimple: /(\d{5,7})\s*\(\s*([\d.]+)\s*\)/g,
+  bracedSimple: /(\d{5,7})\s*\{\s*([^}]*)\}/g,
 
-  hasBrace: /[{}]/,
+  // Format B – 2nd+ semester labeled
+  passedLabeled: /(\d{5,7})\s*\(\s*((?:gpa\d+:\s*[\d.]+(?:\s*,\s*)?)+)\s*\)/gi,
+  bracedLabeled:
+    /(\d{5,7})\s*\{\s*((?:gpa\d+:\s*(?:ref|[\d.]+)(?:\s*,\s*)?)*(?:ref_sub:\s*)?([^}]+))\}/gi,
 
-  /**
-   * Open-brace without closing brace on same line.
-   * Used to start buffering a split REFERRED/FAILED record.
-   */
-  openBrace: /^\d{5,7}\s*\{[^}]*$/,
-
-  /**
-   * Open-paren without closing paren on same line.
-   * Used to start buffering a split PASSED record.
-   * e.g. "802810 (gpa4: 3.58," — no ")" yet.
-   */
-  openParen: /^\d{5,7}\s*\([^)]*$/,
-
-  /**
-   * A bare roll number with nothing else on the line.
-   * pdf-parse sometimes emits the roll and the gpa block on separate lines.
-   * e.g. line1="802810"  line2="(gpa4: 3.58, gpa3: 3.81, gpa2: 3.61, gpa1: 3.48)"
-   */
-  bareRoll: /^\d{5,7}$/,
-
-  bracedRecord: /^(\d{5,7})\s*\{(.+?)\}\s*$/,
-  bracedLineGate: /^\d{5,7}\s*\{/,
-
-  hasGpa: /gpa\d\s*:/,
-
-  gpaField: (label: GpaLabel): RegExp =>
-    new RegExp(`${label}\\s*:\\s*([\\d.]+|ref)`),
-
-  refSub: /ref_sub:\s*(.+)/,
-  subjectCode: /(\d{5})\([TP][^)]*\)/g,
-  semesterNum: /\b([1-8])(?:st|nd|rd|th)\s+semester/i,
-  examYear: /\b(20\d{2})\b/g,
-  regulation: /\((\d{4})\s+Regulation\)/i,
+  subjectCode: /(\d{5})(?:\([TP]+\))?/g,
+  gpaPair: /gpa(\d+):\s*([\d.]+|ref)/gi,
 } as const;
 
-// ─── Value helpers ────────────────────────────────────────────────────────────
-
-function toFloat(value: string | undefined): number | null {
-  if (!value?.trim()) return null;
-  const parsed = parseFloat(value);
-  return Number.isNaN(parsed) ? null : parsed;
+// ─── Helpers ──────────────────────────────────────────────────────────────────
+function cleanText(text: string): string {
+  return text
+    .replace(/\r\n/g, '\n')
+    .replace(/\r/g, '\n')
+    .replace(/\t/g, ' ')
+    .replace(/\u00A0/g, ' ')
+    .replace(/[^\S\n]+/g, ' ')
+    .trim();
 }
 
-function gpaOrNull(value: string | undefined): number | null {
-  if (!value || value.trim() === 'ref') return null;
-  return toFloat(value);
-}
-
-function extractGpaField(label: GpaLabel, content: string): number | null {
-  const m = content.match(RE.gpaField(label));
-  return m ? gpaOrNull(m[1]) : null;
-}
-
-function extractSubjectCodes(text: string): string[] {
-  const re = new RegExp(RE.subjectCode.source, 'g');
-  const matches: string[] = [];
-  let m: RegExpExecArray | null;
-  while ((m = re.exec(text)) !== null) {
-    matches.push(m[1]);
-  }
-  return matches;
-}
-
-function stripPagePrefix(raw: string): string {
-  return raw.replace(RE.pagePrefix, '').trim();
-}
-
-// ─── PDF text pre-processing ──────────────────────────────────────────────────
-
-type BufferType = 'brace' | 'paren' | null;
-
-/**
- * Joins continuation lines for both braced (REFERRED/FAILED) and
- * parenthetical (PASSED) records that pdf-parse splits across lines.
- *
- * Buffer types:
- *   'brace' — open `{` seen, accumulate until `}` appears
- *   'paren' — open `(` seen (or bare roll), accumulate until `)` appears
- *
- * This fixes the core bug: PASSED records for 4th+ semester students were
- * silently dropped because their lines were split and only braces were buffered.
- */
-function joinContinuationLines(rawText: string): string[] {
-  const lines: string[] = [];
+function joinContinuationLines(rawLines: string[]): string[] {
+  const joined: string[] = [];
   let buffer = '';
-  let bufferType: BufferType = null;
 
-  for (const raw of rawText.split('\n')) {
-    const line = stripPagePrefix(raw);
-    if (!line) continue;
-
-    // ── Continuation: append to existing buffer ───────────────────────────
-    if (buffer) {
-      buffer += ' ' + line;
-      const isClosed =
-        bufferType === 'brace' ? buffer.includes('}') : buffer.includes(')');
-      if (isClosed) {
-        lines.push(buffer);
+  for (const line of rawLines) {
+    const trimmed = line.trim();
+    if (!trimmed) {
+      if (buffer) {
+        joined.push(buffer);
         buffer = '';
-        bufferType = null;
       }
       continue;
     }
 
-    // ── Start buffering: open brace, no close brace ───────────────────────
-    if (RE.openBrace.test(line) && !line.includes('}')) {
-      buffer = line;
-      bufferType = 'brace';
+    // Continue braced record
+    if (buffer && buffer.includes('{') && !buffer.includes('}')) {
+      buffer += ' ' + trimmed;
+      if (buffer.includes('}')) {
+        joined.push(buffer);
+        buffer = '';
+      }
       continue;
     }
 
-    // ── Start buffering: open paren, no close paren ───────────────────────
-    // Covers "802810 (gpa4: 3.58," split mid-record
-    if (RE.openParen.test(line) && !line.includes(')')) {
-      buffer = line;
-      bufferType = 'paren';
-      continue;
-    }
-
-    // ── Start buffering: bare roll number ─────────────────────────────────
-    // Covers "802810" on one line, "(gpa4: 3.58, ...)" on the next
-    if (RE.bareRoll.test(line)) {
-      buffer = line;
-      bufferType = 'paren';
-      continue;
-    }
-
-    lines.push(line);
+    if (buffer) joined.push(buffer);
+    buffer = trimmed;
   }
 
-  // Flush unclosed buffer (malformed / truncated record)
-  if (buffer) lines.push(buffer);
-  return lines;
+  if (buffer) joined.push(buffer);
+  return joined;
 }
 
-// ─── Exam metadata extraction ─────────────────────────────────────────────────
+function extractSubjects(text: string): string[] {
+  const codes = new Set<string>();
+  const re = new RegExp(RE.subjectCode.source, 'g');
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(text)) !== null) {
+    codes.add(m[1]);
+  }
+  return Array.from(codes);
+}
 
-function extractExamMeta(text: string): ExamMeta {
-  const header = text.slice(0, 4_000);
+function extractGpas(text: string): Record<string, number | null> {
+  const gpas: Record<string, number | null> = {};
+  const re = new RegExp(RE.gpaPair.source, 'gi');
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(text)) !== null) {
+    gpas[`gpa${m[1]}`] = m[2].toLowerCase() === 'ref' ? null : parseFloat(m[2]);
+  }
+  return gpas;
+}
 
-  const semesterMatch = header.match(RE.semesterNum);
-  const semesterDigit = semesterMatch?.[1] ?? '1';
-  const semesterName = SEMESTER_LABEL[semesterDigit] ?? '1st';
+function emptyGpas() {
+  return {
+    gpa1: null as number | null,
+    gpa2: null as number | null,
+    gpa3: null as number | null,
+    gpa4: null as number | null,
+    gpa5: null as number | null,
+    gpa6: null as number | null,
+    gpa7: null as number | null,
+  };
+}
 
-  const yearMatches = [...header.matchAll(new RegExp(RE.examYear.source, 'g'))]
-    .map((m) => parseInt(m[1], 10))
-    .filter((y) => y >= 2000 && y <= 2100);
-  const examYear = yearMatches.length
-    ? Math.max(...yearMatches)
-    : new Date().getFullYear();
+// ─── Meta Extraction ──────────────────────────────────────────────────────────
+function extractExamMeta(text: string, filename?: string): ExamMeta {
+  const semesterMatch = text.match(RE.semester);
+  const semesterNum = semesterMatch?.[1] ?? '1';
+  const semesterName = SEMESTER_LABEL[semesterNum] ?? `${semesterNum}th`;
 
-  const regulation = header.match(RE.regulation)?.[1] ?? 'Unknown';
+  let examYear = 2025;
+  const near = text.match(RE.examYearNear);
+  if (near) {
+    examYear = parseInt(near[1], 10);
+  } else {
+    const years = [...text.matchAll(RE.yearAny)].map((m) => parseInt(m[1], 10));
+    if (years.length) {
+      const freq: Record<number, number> = {};
+      for (const y of years) freq[y] = (freq[y] || 0) + 1;
+      examYear = Number(
+        Object.entries(freq).sort((a, b) => b[1] - a[1])[0][0],
+      );
+    }
+  }
 
-  console.info(
-    `[Meta] semesterName="${semesterName}" | examYear=${examYear} | regulation="${regulation}"`,
-  );
+  let regulation = '2022';
+  const regMatch = text.match(RE.regulation);
+  if (regMatch) {
+    regulation = regMatch[1];
+  } else if (filename) {
+    const fnReg = filename.match(/(\d{4})_Regulation/i);
+    if (fnReg) regulation = fnReg[1];
+  }
 
   return { semesterName, examYear, regulation };
 }
 
-// ─── Per-line record parsers ──────────────────────────────────────────────────
-
-interface InstituteRef {
-  code: string;
-  name: string;
-}
-
-/**
- * Parses one or more PASSED records from a single (already-joined) line.
- */
-function parsePassed(
+// ─── Parsing Core ─────────────────────────────────────────────────────────────
+function parsePassedLine(
   line: string,
-  institute: InstituteRef,
+  instituteCode: string,
+  instituteName: string,
   meta: ExamMeta,
 ): ParsedStudent[] {
   const students: ParsedStudent[] = [];
-  const re = new RegExp(RE.passedRecord.source, 'g');
-  let match: RegExpExecArray | null;
 
-  while ((match = re.exec(line)) !== null) {
-    const roll = match[1];
-    const content = match[2];
-
-    if (!RE.hasGpa.test(content)) {
-      console.debug(`[Parser] Skipping non-gpa paren roll=${roll}: "${content}"`);
-      continue;
+  // Format A – simple GPA
+  const simpleRe = new RegExp(RE.passedSimple.source, 'g');
+  let m: RegExpExecArray | null;
+  while ((m = simpleRe.exec(line)) !== null) {
+    const gpas = emptyGpas();
+    // Current semester GPA goes into the corresponding slot
+    const semNum = parseInt(meta.semesterName) || 1;
+    if (semNum <= 7) {
+      (gpas as any)[`gpa${semNum}`] = parseFloat(m[2]);
     }
 
-    const student: ParsedStudent = {
-      roll,
-      instituteCode: institute.code,
-      instituteName: institute.name,
+    students.push({
+      roll: m[1],
+      instituteCode,
+      instituteName,
       semesterName: meta.semesterName,
       examYear: meta.examYear,
       regulation: meta.regulation,
       status: DiplomaResultStatus.PASSED,
-      gpa1: extractGpaField('gpa1', content),
-      gpa2: extractGpaField('gpa2', content),
-      gpa3: extractGpaField('gpa3', content),
-      gpa4: extractGpaField('gpa4', content),
-      gpa5: extractGpaField('gpa5', content),
-      gpa6: extractGpaField('gpa6', content),
-      gpa7: extractGpaField('gpa7', content),
+      ...gpas,
       referredSubjects: [],
       failedSubjects: [],
-    };
+    });
+  }
 
-    console.debug(
-      `[Parser] PASSED roll=${roll} gpa4=${student.gpa4} gpa3=${student.gpa3} gpa2=${student.gpa2} gpa1=${student.gpa1}`,
-    );
+  // Format B – labeled
+  const labeledRe = new RegExp(RE.passedLabeled.source, 'gi');
+  while ((m = labeledRe.exec(line)) !== null) {
+    const extracted = extractGpas(m[2]);
+    const gpas = emptyGpas();
+    Object.assign(gpas, extracted);
 
-    students.push(student);
+    students.push({
+      roll: m[1],
+      instituteCode,
+      instituteName,
+      semesterName: meta.semesterName,
+      examYear: meta.examYear,
+      regulation: meta.regulation,
+      status: DiplomaResultStatus.PASSED,
+      ...gpas,
+      referredSubjects: [],
+      failedSubjects: [],
+    });
   }
 
   return students;
 }
 
-/**
- * Parses a single braced record — REFERRED (with or without gpa) or FAILED.
- *
- * Classification:
- *   1. Has gpa fields                          → REFERRED (cumulative gpa available)
- *   2. No gpa, subject count >= 4 (this sem)   → FAILED   (dropout threshold reached)
- *   3. No gpa, subject count 1–3               → REFERRED (back-paper, still enrolled)
- *   4. No gpa, no subject codes at all         → FAILED   (malformed / unrecognised)
- */
-function parseBraced(
+function parseBracedLine(
   line: string,
-  institute: InstituteRef,
+  instituteCode: string,
+  instituteName: string,
   meta: ExamMeta,
+  forcedStatus: DiplomaResultStatus,
 ): ParsedStudent | null {
-  const match = line.match(RE.bracedRecord);
-  if (!match) return null;
+  // Format B – labeled
+  const labeledRe = new RegExp(RE.bracedLabeled.source, 'gi');
+  let m = labeledRe.exec(line);
+  if (m) {
+    const roll = m[1];
+    const body = m[2] || '';
+    const subjects = extractSubjects(body);
+    const extracted = extractGpas(body);
+    const gpas = emptyGpas();
+    Object.assign(gpas, extracted);
 
-  const roll = match[1];
-  const content = match[2].trim();
+    const isFailed =
+      forcedStatus === DiplomaResultStatus.FAILED ||
+      subjects.length >= DROPOUT_SUBJECT_THRESHOLD;
 
-  const base = {
-    roll,
-    instituteCode: institute.code,
-    instituteName: institute.name,
-    semesterName: meta.semesterName,
-    examYear: meta.examYear,
-    regulation: meta.regulation,
-  } as const;
-
-  const nullGpas = {
-    gpa1: null, gpa2: null, gpa3: null, gpa4: null,
-    gpa5: null, gpa6: null, gpa7: null,
-  } as const;
-
-  // ── Case 1: record has cumulative gpa fields → always REFERRED ────────────
-  if (RE.hasGpa.test(content)) {
-    const refSubRaw = content.match(RE.refSub)?.[1] ?? '';
     return {
-      ...base,
-      status: DiplomaResultStatus.REFERRED,
-      gpa1: extractGpaField('gpa1', content),
-      gpa2: extractGpaField('gpa2', content),
-      gpa3: extractGpaField('gpa3', content),
-      gpa4: extractGpaField('gpa4', content),
-      gpa5: extractGpaField('gpa5', content),
-      gpa6: extractGpaField('gpa6', content),
-      gpa7: extractGpaField('gpa7', content),
-      referredSubjects: extractSubjectCodes(refSubRaw),
-      failedSubjects: [],
+      roll,
+      instituteCode,
+      instituteName,
+      semesterName: meta.semesterName,
+      examYear: meta.examYear,
+      regulation: meta.regulation,
+      status: isFailed ? DiplomaResultStatus.FAILED : DiplomaResultStatus.REFERRED,
+      ...gpas,
+      referredSubjects: isFailed ? [] : subjects,
+      failedSubjects: isFailed ? subjects : [],
     };
   }
 
-  const subjectCodes = extractSubjectCodes(content);
-
-  if (subjectCodes.length > 0) {
-    // ── Case 2: 4+ subjects failed in this single semester → dropout (FAILED) ─
-    // ── Case 3: fewer than 4 subjects → back-paper candidate (REFERRED) ───────
-    const isDropout = subjectCodes.length >= DROPOUT_SUBJECT_THRESHOLD;
-
-    console.debug(
-      `[Parser] ${isDropout ? 'FAILED' : 'REFERRED'} roll=${roll} subjects=${subjectCodes.length} codes=${subjectCodes.join(',')}`,
-    );
+  // Format A – simple subjects
+  const simpleRe = new RegExp(RE.bracedSimple.source, 'g');
+  m = simpleRe.exec(line);
+  if (m) {
+    const roll = m[1];
+    const subjects = extractSubjects(m[2]);
+    const isFailed =
+      forcedStatus === DiplomaResultStatus.FAILED ||
+      subjects.length >= DROPOUT_SUBJECT_THRESHOLD;
 
     return {
-      ...base,
-      ...nullGpas,
-      status: isDropout ? DiplomaResultStatus.FAILED : DiplomaResultStatus.REFERRED,
-      referredSubjects: isDropout ? [] : subjectCodes,
-      failedSubjects:   isDropout ? subjectCodes : [],
+      roll,
+      instituteCode,
+      instituteName,
+      semesterName: meta.semesterName,
+      examYear: meta.examYear,
+      regulation: meta.regulation,
+      status: isFailed ? DiplomaResultStatus.FAILED : DiplomaResultStatus.REFERRED,
+      ...emptyGpas(),
+      referredSubjects: isFailed ? [] : subjects,
+      failedSubjects: isFailed ? subjects : [],
     };
   }
 
-  // ── Case 4: no subject codes extracted — malformed record → FAILED ─────────
-  return {
-    ...base,
-    ...nullGpas,
-    status: DiplomaResultStatus.FAILED,
-    referredSubjects: [],
-    failedSubjects: [],
-  };
+  return null;
 }
-
-// ─── Full-document processor ──────────────────────────────────────────────────
 
 function processLines(lines: string[], meta: ExamMeta): ParsedStudent[] {
   const students: ParsedStudent[] = [];
-  let institute: InstituteRef | null = null;
-  let isTargetInstitute = false;
+  let currentInstituteCode: string | null = null;
+  let currentInstituteName = '';
+  let currentSection: 'PASSED' | 'REFERRED' | 'FAILED' | null = null;
 
   for (const line of lines) {
-    if (!line) continue;
+    const instMatch = line.match(RE.institute);
+    if (instMatch) {
+      currentInstituteCode = instMatch[1];
+      currentInstituteName = instMatch[2].trim();
+      currentSection = null;
+      continue;
+    }
 
-    // ── Institute header ──────────────────────────────────────────────────
-    const instituteMatch = line.match(RE.instituteHeader);
-    if (
-      instituteMatch &&
-      !RE.hasBrace.test(line) &&
-      !RE.hasGpa.test(line) &&
-      !RE.passedLine.test(line)
-    ) {
-      institute = { code: instituteMatch[1], name: instituteMatch[2].trim() };
-      isTargetInstitute = institute.code === TARGET_INSTITUTE_CODE;
-      console.info(
-        `[Parser] Institute: ${institute.code} "${institute.name}" | target=${isTargetInstitute}`,
+    if (currentInstituteCode !== TARGET_INSTITUTE_CODE) continue;
+
+    if (RE.sectionPassed.test(line) || RE.sectionPassedText.test(line)) {
+      currentSection = 'PASSED';
+      continue;
+    }
+    if (RE.sectionReferred.test(line) || RE.sectionReferredText.test(line)) {
+      currentSection = 'REFERRED';
+      continue;
+    }
+    if (RE.sectionFailed.test(line) || RE.sectionFailedText.test(line)) {
+      currentSection = 'FAILED';
+      continue;
+    }
+
+    if (!currentSection) continue;
+
+    if (currentSection === 'PASSED') {
+      students.push(
+        ...parsePassedLine(
+          line,
+          currentInstituteCode,
+          currentInstituteName,
+          meta,
+        ),
       );
-      continue;
-    }
-
-    if (!isTargetInstitute || !institute) continue;
-
-    // ── PASSED ────────────────────────────────────────────────────────────
-    if (RE.passedLine.test(line)) {
-      const parsed = parsePassed(line, institute, meta);
-      if (parsed.length > 0) {
-        students.push(...parsed);
-      } else {
-        console.warn(`[Parser] PASSED line matched but no records extracted: "${line}"`);
-      }
-      continue;
-    }
-
-    // ── REFERRED / FAILED ─────────────────────────────────────────────────
-    if (RE.bracedLineGate.test(line)) {
-      const student = parseBraced(line, institute, meta);
-      if (student) {
-        students.push(student);
-      } else {
-        console.warn(`[Parser] Braced line did not parse: "${line}"`);
-      }
+    } else {
+      const student = parseBracedLine(
+        line,
+        currentInstituteCode,
+        currentInstituteName,
+        meta,
+        currentSection === 'FAILED'
+          ? DiplomaResultStatus.FAILED
+          : DiplomaResultStatus.REFERRED,
+      );
+      if (student) students.push(student);
     }
   }
 
   return students;
 }
 
-// ─── PDF extraction ───────────────────────────────────────────────────────────
+// ─── Public Parse ─────────────────────────────────────────────────────────────
+export async function parseResultPdf(
+  buffer: Buffer,
+  filename?: string,
+): Promise<ParseResult> {
+  const pdf = (await import('pdf-parse')).default;
+  const data = await pdf(buffer);
+  const rawText = cleanText(data.text);
+  const lines = joinContinuationLines(rawText.split('\n'));
 
-async function parsePDFBuffer(buffer: Buffer): Promise<ParseResult> {
-  let rawText: string;
+  const meta = extractExamMeta(rawText, filename);
+  console.log(
+    `[Meta] semesterName="${meta.semesterName}" | examYear=${meta.examYear} | regulation="${meta.regulation}"`,
+  );
 
-  try {
-    const pdfParse = (await import('pdf-parse')).default;
-    const result = await pdfParse(buffer);
-    rawText = result.text;
-  } catch (error) {
-    console.error('[PDF] Text extraction failed:', error);
-    throw new ApiError(
-      httpStatus.INTERNAL_SERVER_ERROR,
-      'PDF text extraction failed. Ensure the file is a text-based PDF, not a scanned image.',
-    );
-  }
-
-  if (!rawText?.trim()) {
-    throw new ApiError(
-      httpStatus.UNPROCESSABLE_ENTITY,
-      'PDF contains no extractable text.',
-    );
-  }
-
-  const meta = extractExamMeta(rawText);
-  const lines = joinContinuationLines(rawText);
   const students = processLines(lines, meta);
 
-  const passedCount   = students.filter((s) => s.status === DiplomaResultStatus.PASSED).length;
-  const referredCount = students.filter((s) => s.status === DiplomaResultStatus.REFERRED).length;
-  const failedCount   = students.filter((s) => s.status === DiplomaResultStatus.FAILED).length;
-
-  console.info(
-    `[Parser] PASSED=${passedCount} | REFERRED=${referredCount} | FAILED=${failedCount} | TOTAL=${students.length}`,
-  );
-
-  if (!students.length) {
-    console.warn(
-      `[Parser] ⚠ No students found for institute ${TARGET_INSTITUTE_CODE}. ` +
-        'Verify the institute code appears in this PDF.',
-    );
-  }
-
-  return { meta, totalParsed: students.length, students };
-}
-
-// ─── DB lookup helpers ────────────────────────────────────────────────────────
-
-interface StudentLookup {
-  studentId: number;
-  groupId: number;
-}
-
-async function fetchStudentMap(rolls: string[]): Promise<Map<string, StudentLookup>> {
-  if (!rolls.length) return new Map();
-
-  const rows = await prisma.student.findMany({
-    where: { roll: { in: rolls }, isDeleted: false },
-    select: { id: true, roll: true, groupId: true },
-  });
-
-  return new Map(
-    rows.map((row) => [row.roll, { studentId: row.id, groupId: row.groupId }]),
-  );
-}
-
-async function fetchSemesterMap(): Promise<Map<string, number>> {
-  const rows = await prisma.semester.findMany({
-    where: { isDeleted: false },
-    select: { id: true, name: true },
-  });
-
-  return new Map(rows.map((row) => [row.name, row.id]));
-}
-
-// ─── Upsert payload builder ───────────────────────────────────────────────────
-
-type UpsertArgs = Parameters<typeof prisma.diplomaResult.upsert>[0];
-
-function buildUpsertArgs(
-  student: ParsedStudent,
-  semesterId: number | undefined,
-  lookup: StudentLookup | undefined,
-): UpsertArgs {
-  const semesterConnect    = semesterId !== undefined ? { connect: { id: semesterId } } : undefined;
-  const semesterDisconnect = semesterId === undefined ? { disconnect: true as const } : undefined;
-  const studentConnect     = lookup !== undefined ? { connect: { id: lookup.studentId } } : undefined;
-  const groupConnect       = lookup !== undefined ? { connect: { id: lookup.groupId } } : undefined;
-
-  const sharedFields = {
-    status:          student.status,
-    instituteCode:   student.instituteCode,
-    instituteName:   student.instituteName,
-    gpa1: student.gpa1, gpa2: student.gpa2, gpa3: student.gpa3,
-    gpa4: student.gpa4, gpa5: student.gpa5, gpa6: student.gpa6,
-    gpa7: student.gpa7,
-    referredSubjects: student.referredSubjects,
-    failedSubjects:   student.failedSubjects,
+  const summary = {
+    PASSED: students.filter((s) => s.status === DiplomaResultStatus.PASSED).length,
+    REFERRED: students.filter((s) => s.status === DiplomaResultStatus.REFERRED).length,
+    FAILED: students.filter((s) => s.status === DiplomaResultStatus.FAILED).length,
   };
+
+  console.log(
+    `[Parser] PASSED=${summary.PASSED} | REFERRED=${summary.REFERRED} | FAILED=${summary.FAILED} | TOTAL=${students.length}`,
+  );
 
   return {
-    where: {
-      roll_semesterName_examYear_regulation: {
-        roll:         student.roll,
-        semesterName: student.semesterName,
-        examYear:     student.examYear,
-        regulation:   student.regulation,
-      },
-    },
-    create: {
-      ...sharedFields,
-      roll:         student.roll,
-      semesterName: student.semesterName,
-      examYear:     student.examYear,
-      regulation:   student.regulation,
-      ...(semesterConnect && { semester: semesterConnect }),
-      ...(studentConnect  && { student:  studentConnect  }),
-      ...(groupConnect    && { group:    groupConnect    }),
-    },
-    update: {
-      ...sharedFields,
-      semester: semesterConnect ?? semesterDisconnect!,
-      ...(studentConnect && { student: studentConnect }),
-      ...(groupConnect   && { group:   groupConnect   }),
-    },
+    meta,
+    totalParsed: students.length,
+    students,
   };
 }
 
-// ─── Concurrent task runner ───────────────────────────────────────────────────
+// ─── DB Helpers ───────────────────────────────────────────────────────────────
+// ─── DB Helpers (High Performance) ────────────────────────────────────────────
 
-async function runWithConcurrency<T>(
-  tasks: Array<() => Promise<T>>,
-  concurrency: number,
-): Promise<T[]> {
-  const results: T[] = [];
-  for (let i = 0; i < tasks.length; i += concurrency) {
-    const slice = tasks.slice(i, i + concurrency);
-    const sliceResults = await Promise.all(slice.map((fn) => fn()));
-    results.push(...sliceResults);
-  }
-  return results;
+async function resolveSubjects(codes: string[]): Promise<Map<string, number>> {
+  if (!codes.length) return new Map();
+  const subjects = await prisma.subject.findMany({
+    where: { code: { in: codes } },
+    select: { id: true, code: true },
+  });
+  return new Map(subjects.map((s) => [s.code, s.id]));
 }
 
-// ─── Persistence ──────────────────────────────────────────────────────────────
+async function getStudentIdMap(rolls: string[]): Promise<Map<string, number>> {
+  const map = new Map<string, number>();
+  const BATCH = 800;
 
-async function saveParsedResults(students: ParsedStudent[]): Promise<SaveResult> {
+  for (let i = 0; i < rolls.length; i += BATCH) {
+    const slice = rolls.slice(i, i + BATCH);
+    const students = await prisma.student.findMany({
+      where: { roll: { in: slice }, isDeleted: false },
+      select: { id: true, roll: true },
+    });
+    for (const s of students) map.set(s.roll, s.id);
+  }
+  return map;
+}
+
+// ─── Public Save (Optimized) ──────────────────────────────────────────────────
+export async function saveParsedResults(
+  parseResult: ParseResult,
+): Promise<SaveResult> {
+  const { students } = parseResult;
+
   if (!students.length) {
-    return { savedCount: 0, linkedCount: 0, orphanCount: 0, skippedCount: 0, orphanRolls: [] };
+    throw new ApiError(httpStatus.BAD_REQUEST, 'No students parsed from PDF');
   }
 
-  const semesterMap = await fetchSemesterMap();
+  console.log(`[DB] Preparing to save ${students.length} records...`);
 
-  let savedCount  = 0;
-  let linkedCount = 0;
-  let orphanCount = 0;
-  const orphanRolls: string[] = [];
+  // 1. Resolve subjects once
+  const allCodes = [
+    ...new Set([
+      ...students.flatMap((s) => s.referredSubjects),
+      ...students.flatMap((s) => s.failedSubjects),
+    ]),
+  ];
+  const subjectMap = await resolveSubjects(allCodes);
 
-  const totalBatches = Math.ceil(students.length / DB_CHUNK_SIZE);
-
-  for (let i = 0; i < students.length; i += DB_CHUNK_SIZE) {
-    const batch       = students.slice(i, i + DB_CHUNK_SIZE);
-    const batchNumber = Math.floor(i / DB_CHUNK_SIZE) + 1;
-
-    const studentMap = await fetchStudentMap(batch.map((s) => s.roll));
-
-    let batchLinked = 0;
-    let batchOrphan = 0;
-
-    const tasks = batch.map((student) => {
-      const semesterId = semesterMap.get(student.semesterName);
-      const lookup     = studentMap.get(student.roll);
-
-      if (semesterId === undefined) {
-        console.warn(
-          `[DB] Semester "${student.semesterName}" not found — saved without semester link.`,
-        );
-      }
-
-      if (lookup) {
-        batchLinked++;
-      } else {
-        batchOrphan++;
-        orphanRolls.push(student.roll);
-      }
-
-      return (): Promise<unknown> =>
-        prisma.diplomaResult.upsert(buildUpsertArgs(student, semesterId, lookup));
-    });
-
-    await runWithConcurrency(tasks, DB_CHUNK_CONCURRENCY);
-
-    savedCount  += batch.length;
-    linkedCount += batchLinked;
-    orphanCount += batchOrphan;
-
-    console.info(
-      `[DB] Batch ${batchNumber}/${totalBatches}: upserted=${batch.length} | linked=${batchLinked} | orphan=${batchOrphan}`,
+  const missing = allCodes.filter((c) => !subjectMap.has(c));
+  if (missing.length) {
+    console.warn(
+      `[DB] ${missing.length} subject code(s) missing:`,
+      missing.slice(0, 10).join(', '),
     );
   }
 
-  console.info(
-    `[DB] Complete — savedCount=${savedCount} | linkedCount=${linkedCount} | orphanCount=${orphanCount}`,
-  );
+  // 2. Pre-fetch all student IDs
+  const studentIdMap = await getStudentIdMap(students.map((s) => s.roll));
+  console.log(`[DB] Matched ${studentIdMap.size} students`);
 
-  if (orphanRolls.length) {
-    const preview  = orphanRolls.slice(0, 20).join(', ');
-    const overflow = orphanRolls.length > 20 ? `, and ${orphanRolls.length - 20} more` : '';
-    console.warn(`[DB] Orphan rolls (no matching Student row): ${preview}${overflow}`);
+  // 3. Upsert all DiplomaResult records with high concurrency
+  const UPSERT_CONCURRENCY = 25; // safe for most Postgres
+  const diplomaResultIds: number[] = [];
+  const orphanRolls: string[] = [];
+  let linkedCount = 0;
+
+  // Helper to process one student
+  const upsertOne = async (s: ParsedStudent) => {
+    const studentId = studentIdMap.get(s.roll) ?? null;
+
+    const result = await prisma.diplomaResult.upsert({
+      where: {
+        roll_semesterName_examYear_regulation: {
+          roll: s.roll,
+          semesterName: s.semesterName,
+          examYear: s.examYear,
+          regulation: s.regulation,
+        },
+      },
+      create: {
+        roll: s.roll,
+        status: s.status,
+        gpa1: s.gpa1,
+        gpa2: s.gpa2,
+        gpa3: s.gpa3,
+        gpa4: s.gpa4,
+        gpa5: s.gpa5,
+        gpa6: s.gpa6,
+        gpa7: s.gpa7,
+        semesterName: s.semesterName,
+        examYear: s.examYear,
+        regulation: s.regulation,
+        instituteCode: s.instituteCode,
+        instituteName: s.instituteName,
+        studentId,
+        isDeleted: false,
+      },
+      update: {
+        status: s.status,
+        gpa1: s.gpa1,
+        gpa2: s.gpa2,
+        gpa3: s.gpa3,
+        gpa4: s.gpa4,
+        gpa5: s.gpa5,
+        gpa6: s.gpa6,
+        gpa7: s.gpa7,
+        instituteCode: s.instituteCode,
+        instituteName: s.instituteName,
+        studentId,
+        isDeleted: false,
+      },
+      select: { id: true },
+    });
+
+    if (studentId) linkedCount++;
+    else orphanRolls.push(s.roll);
+
+    return { id: result.id, student: s };
+  };
+
+  // Process in concurrent batches
+  const results: { id: number; student: ParsedStudent }[] = [];
+
+  for (let i = 0; i < students.length; i += UPSERT_CONCURRENCY) {
+    const batch = students.slice(i, i + UPSERT_CONCURRENCY);
+    const batchResults = await Promise.all(batch.map(upsertOne));
+    results.push(...batchResults);
+
+    if ((i / UPSERT_CONCURRENCY) % 4 === 0) {
+      console.log(`[DB] Upserted ${Math.min(i + UPSERT_CONCURRENCY, students.length)}/${students.length}`);
+    }
   }
 
-  return { savedCount, linkedCount, orphanCount, skippedCount: 0, orphanRolls };
+  const savedCount = results.length;
+  console.log(`[DB] All ${savedCount} DiplomaResult records upserted`);
+
+  // 4. Collect all diplomaResult IDs
+  const allResultIds = results.map((r) => r.id);
+
+  // 5. Delete ALL old subjects in one go (very fast)
+  if (allResultIds.length > 0) {
+    await prisma.diplomaResultSubject.deleteMany({
+      where: { diplomaResultId: { in: allResultIds } },
+    });
+    console.log(`[DB] Cleared old subjects`);
+  }
+
+  // 6. Build all subject rows and insert in large batches
+  const subjectRows: {
+    diplomaResultId: number;
+    subjectCode: string;
+    subjectId: number | null;
+    type: SubjectResultType;
+  }[] = [];
+
+  for (const { id, student } of results) {
+    for (const code of student.referredSubjects) {
+      subjectRows.push({
+        diplomaResultId: id,
+        subjectCode: code,
+        subjectId: subjectMap.get(code) ?? null,
+        type: SubjectResultType.REFERRED,
+      });
+    }
+    for (const code of student.failedSubjects) {
+      subjectRows.push({
+        diplomaResultId: id,
+        subjectCode: code,
+        subjectId: subjectMap.get(code) ?? null,
+        type: SubjectResultType.FAILED,
+      });
+    }
+  }
+
+  // Insert subjects in large chunks
+  const SUBJECT_BATCH = 1000;
+  for (let i = 0; i < subjectRows.length; i += SUBJECT_BATCH) {
+    const slice = subjectRows.slice(i, i + SUBJECT_BATCH);
+    if (slice.length) {
+      await prisma.diplomaResultSubject.createMany({ data: slice });
+    }
+  }
+  console.log(`[DB] Inserted ${subjectRows.length} subject rows`);
+
+  // 7. Cache
+  const rolls = students.map((s) => s.roll);
+
+  console.log(`[Cache] Invalidating ${rolls.length} keys...`);
+  await resultQueryService.invalidateResultCache(rolls);
+
+  console.log(`[Cache] Warming cache (background)...`);
+  (async () => {
+    const WARM = 15;
+    for (let i = 0; i < rolls.length; i += WARM) {
+      const slice = rolls.slice(i, i + WARM);
+      await Promise.all(
+        slice.map((roll) =>
+          resultQueryService.getResultByRoll(roll).catch(() => null),
+        ),
+      );
+    }
+    console.log(`[Cache] Warming finished`);
+  })();
+
+  return {
+    savedCount,
+    linkedCount,
+    orphanCount: orphanRolls.length,
+    skippedCount: 0,
+    orphanRolls: orphanRolls.slice(0, 100),
+  };
 }
 
 export const resultParserService = {
-  parsePDFBuffer,
+  parseResultPdf,
   saveParsedResults,
-} as const;
+};

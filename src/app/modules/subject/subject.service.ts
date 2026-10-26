@@ -1,19 +1,22 @@
-
 import { prisma } from '../../shared/prisma';
 import { Prisma } from '@prisma/client';
 import ApiError from '../../errors/api.error';
 import httpStatus from 'http-status';
 import { paginationHelper } from '../../helper/paginationHelper';
-import { subjectSearchableFields, subjectSortableFields } from './subject.constant';
-import { ISubjectFilterRequest, TSubjectCreate, TSubjectUpdate } from './subject.interface';
-
+import {
+  subjectSearchableFields,
+  subjectSortableFields,
+} from './subject.constant';
+import {
+  ISubjectFilterRequest,
+  TSubjectCreate,
+  TSubjectUpdate,
+} from './subject.interface';
 
 const subjectInclude = {
   semester: true,
   department: true,
-
 } satisfies Prisma.SubjectInclude;
-
 
 const findOrThrow = async (id: number) => {
   const record = await prisma.subject.findUnique({ where: { id } });
@@ -23,6 +26,7 @@ const findOrThrow = async (id: number) => {
   return record;
 };
 
+// ── Create ────────────────────────────────────────────────────────────────────
 const createSubject = async (payload: TSubjectCreate) => {
   const existing = await prisma.subject.findUnique({
     where: { code: payload.code },
@@ -37,7 +41,7 @@ const createSubject = async (payload: TSubjectCreate) => {
       name: payload.name,
       shortName: payload.shortName,
       code: payload.code,
-      credits: payload.credits,        
+      credits: payload.credits,
       semesterId: payload.semesterId,
       departmentId: payload.departmentId,
       totalClasses: payload.totalClasses ?? 0,
@@ -45,13 +49,23 @@ const createSubject = async (payload: TSubjectCreate) => {
     include: subjectInclude,
   });
 };
-
 const getAllSubjects = async (filters: ISubjectFilterRequest) => {
-  const { searchTerm, page, limit, sortBy, sortOrder, ...filterData } = filters;
+  const {
+    searchTerm,
+    page,
+    limit,
+    sortBy,
+    sortOrder,
+    semesterId,
+    departmentId,
+    ...rest
+  } = filters;
 
-  const andConditions: Prisma.SubjectWhereInput[] = [];
+  const andConditions: Prisma.SubjectWhereInput[] = [
+    { isDeleted: false },
+  ];
 
-
+  // Search
   if (searchTerm?.trim()) {
     andConditions.push({
       OR: subjectSearchableFields.map((field) => ({
@@ -60,20 +74,33 @@ const getAllSubjects = async (filters: ISubjectFilterRequest) => {
     });
   }
 
+  // Semester filter — number only
+  if (semesterId !== undefined && semesterId !== null) {
+    andConditions.push({
+      semesterId: Number(semesterId),
+    });
+  }
 
-  if (Object.keys(filterData).length > 0) {
-    const filterConditions = Object.entries(filterData)
-      .filter(([_, value]) => value != null)
+  // Department filter — number only
+  if (departmentId !== undefined && departmentId !== null) {
+    andConditions.push({
+      departmentId: Number(departmentId),
+    });
+  }
+
+  // Extra filters (skip null / undefined only)
+  if (Object.keys(rest).length > 0) {
+    const extra = Object.entries(rest)
+      .filter(([_, value]) => value !== undefined && value !== null)
       .map(([field, value]) => ({ [field]: value }));
 
-    if (filterConditions.length > 0) {
-      andConditions.push({ AND: filterConditions });
+    if (extra.length > 0) {
+      andConditions.push({ AND: extra });
     }
   }
 
   const where: Prisma.SubjectWhereInput =
     andConditions.length > 0 ? { AND: andConditions } : {};
-
 
   const pagination = paginationHelper.calculatePagination({
     page,
@@ -116,6 +143,139 @@ const getAllSubjects = async (filters: ISubjectFilterRequest) => {
   };
 };
 
+// ── Semester-wise book list (grouped) ─────────────────────────────────────────
+/**
+ * Returns all subjects grouped by semester.
+ * Optional filters: departmentId, searchTerm
+ *
+ * Example response:
+ * [
+ *   {
+ *     semester: { id: 1, name: "1st", order: 1 },
+ *     books: [ { id, name, code, credits, ... }, ... ]
+ *   },
+ *   ...
+ * ]
+ */// ── Semester-wise book list (grouped) ─────────────────────────────────────────
+const getSubjectsGroupedBySemester = async (filters?: {
+  departmentId?: number | string;
+  searchTerm?: string;
+}) => {
+  const andConditions: Prisma.SubjectWhereInput[] = [{ isDeleted: false }];
+
+  // Safe check for number | string
+  if (
+    filters?.departmentId !== undefined &&
+    filters.departmentId !== null &&
+    String(filters.departmentId).trim() !== ''
+  ) {
+    andConditions.push({
+      departmentId: Number(filters.departmentId),
+    });
+  }
+
+  if (filters?.searchTerm?.trim()) {
+    andConditions.push({
+      OR: subjectSearchableFields.map((field) => ({
+        [field]: {
+          contains: filters.searchTerm!.trim(),
+          mode: 'insensitive' as const,
+        },
+      })),
+    });
+  }
+
+  const where: Prisma.SubjectWhereInput =
+    andConditions.length > 0 ? { AND: andConditions } : {};
+
+  const subjects = await prisma.subject.findMany({
+    where,
+    include: subjectInclude,
+    orderBy: [{ semester: { order: 'asc' } }, { code: 'asc' }],
+  });
+
+  const map = new Map<
+    number,
+    {
+      semester: { id: number; name: string; order: number };
+      books: typeof subjects;
+    }
+  >();
+
+  for (const subject of subjects) {
+    const sem = subject.semester;
+    if (!sem) continue;
+
+    if (!map.has(sem.id)) {
+      map.set(sem.id, {
+        semester: { id: sem.id, name: sem.name, order: sem.order },
+        books: [],
+      });
+    }
+    map.get(sem.id)!.books.push(subject);
+  }
+
+  return Array.from(map.values()).sort(
+    (a, b) => a.semester.order - b.semester.order
+  );
+};
+
+// ── Books of a single semester ────────────────────────────────────────────────
+const getSubjectsBySemester = async (
+  semesterId: number,
+  filters?: { departmentId?: number | string; searchTerm?: string }
+) => {
+  const semester = await prisma.semester.findUnique({
+    where: { id: semesterId },
+  });
+
+  if (!semester) {
+    throw new ApiError(httpStatus.NOT_FOUND, 'Semester not found');
+  }
+
+  const andConditions: Prisma.SubjectWhereInput[] = [
+    { isDeleted: false },
+    { semesterId },
+  ];
+
+  if (
+    filters?.departmentId !== undefined &&
+    filters.departmentId !== null &&
+    String(filters.departmentId).trim() !== ''
+  ) {
+    andConditions.push({
+      departmentId: Number(filters.departmentId),
+    });
+  }
+
+  if (filters?.searchTerm?.trim()) {
+    andConditions.push({
+      OR: subjectSearchableFields.map((field) => ({
+        [field]: {
+          contains: filters.searchTerm!.trim(),
+          mode: 'insensitive' as const,
+        },
+      })),
+    });
+  }
+
+  const books = await prisma.subject.findMany({
+    where: { AND: andConditions },
+    include: subjectInclude,
+    orderBy: { code: 'asc' },
+  });
+
+  return {
+    semester: {
+      id: semester.id,
+      name: semester.name,
+      order: semester.order,
+    },
+    totalBooks: books.length,
+    books,
+  };
+};
+// ── Single / Update ───────────────────────────────────────────────────────────
 const getSingleSubject = async (id: number) => {
   const result = await prisma.subject.findUnique({
     where: { id },
@@ -135,7 +295,6 @@ const getSingleSubject = async (id: number) => {
 const updateSubject = async (id: number, payload: TSubjectUpdate) => {
   const subject = await findOrThrow(id);
 
-
   if (payload.code && payload.code !== subject.code) {
     const duplicate = await prisma.subject.findUnique({
       where: { code: payload.code },
@@ -151,6 +310,7 @@ const updateSubject = async (id: number, payload: TSubjectUpdate) => {
       name: payload.name,
       shortName: payload.shortName,
       code: payload.code,
+      credits: payload.credits,
       semesterId: payload.semesterId,
       departmentId: payload.departmentId,
       totalClasses: payload.totalClasses,
@@ -159,10 +319,11 @@ const updateSubject = async (id: number, payload: TSubjectUpdate) => {
   });
 };
 
-
 export const subjectService = {
   createSubject,
   getAllSubjects,
+  getSubjectsGroupedBySemester, // semester-wise book list
+  getSubjectsBySemester,        // books of one semester
   getSingleSubject,
   updateSubject,
 };
