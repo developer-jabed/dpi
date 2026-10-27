@@ -19,6 +19,8 @@ import { dashboardRoutes } from '../modules/meta/meta.route';
 import { routineRoutes } from '../modules/routine/routine.route';
 import { groupResultPdfRoutes } from '../modules/groupResultPdf/groupResultPdf.route';
 import { enrollmentRoutes } from '../modules/enrollment/enrollment.route';
+import { overviewRoutes } from '../modules/myOverview/myOverview.route';
+import { reportRoutes } from '../modules/report/report.routes';
 
 const router = express.Router();
 
@@ -103,6 +105,17 @@ const moduleRoutes = [
 {
   path : '/enrollments',
   route: enrollmentRoutes
+},
+
+
+{
+  path: '/overview',
+  route: overviewRoutes
+},
+
+{
+  path: '/report',
+  route: reportRoutes
 }
 
 ];

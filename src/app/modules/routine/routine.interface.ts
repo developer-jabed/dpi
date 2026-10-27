@@ -1,15 +1,17 @@
 
 import { ClassRoutine } from '@prisma/client';
 
-export type ICreateRoutine = {
+export interface ICreateRoutine {
   groupId: number;
-  subjectGroupId: number;
+  subjectId: number;
+  teacherId: number; 
   dayOfWeek: number;
   period: number;
   startTime: string;
   endTime: string;
   room?: string;
-};
+  isActive?: boolean;
+}
 
 export type IUpdateRoutine = Partial<ICreateRoutine>;
 

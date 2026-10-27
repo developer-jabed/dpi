@@ -742,6 +742,10 @@ export const getTeacherDashboard = async (userId: number) => {
 // Student Dashboard
 // ─────────────────────────────────────────────────────────────
 
+// Replace the existing `getStudentDashboard` in meta.service.ts with this.
+// Uses the helpers already in that file: prisma, ApiError, httpStatus,
+// groupByStatus, countByStatus, getLast12Months, gCount.
+
 export const getStudentDashboard = async (userId: number) => {
   const student = await prisma.student.findUnique({
     where: { userId, isDeleted: false },
@@ -756,7 +760,7 @@ export const getStudentDashboard = async (userId: number) => {
   if (!student) throw new ApiError(httpStatus.NOT_FOUND, "Student not found");
 
   const { id: studentId, groupId, departmentId } = student;
-  const semesterId = student.group?.currentSemesterId;
+  const semesterId = student.group?.currentSemesterId ?? undefined;
   const months = getLast12Months();
 
   const [
@@ -772,28 +776,101 @@ export const getStudentDashboard = async (userId: number) => {
     }),
     prisma.practicalSubmission.findMany({
       where: { studentId },
+      orderBy: { createdAt: "desc" },
       select: {
-        /* ... same as original */
+        id: true,
+        submitted: true,
+        obtainedMarks: true,
+        createdAt: true,
+        practical: {
+          select: {
+            id: true,
+            title: true,
+            type: true,
+            totalMarks: true,
+            submissionDeadline: true,
+          },
+        },
       },
     }),
     prisma.diplomaResult.findMany({
-      /* ... same as original */
+      where: { studentId, isDeleted: false },
+      orderBy: { createdAt: "desc" },
+      select: {
+        id: true,
+        semesterName: true,
+        examYear: true,
+        status: true,
+        gpa1: true,
+        referredSubjects: true,
+        failedSubjects: true,
+      },
     }),
     prisma.notice.findMany({
-      /* ... */
+      where: { studentId },
+      orderBy: { createdAt: "desc" },
+      take: 5,
+      select: {
+        id: true,
+        title: true,
+        audienceType: true,
+        priority: true,
+        isPublished: true,
+        createdAt: true,
+        group: { select: { id: true, name: true } },
+        student: { select: { id: true, name: true } },
+      },
     }),
     prisma.notice.findMany({
-      /* ... */
+      where: {
+        isPublished: true,
+        OR: [
+          { audienceType: "ALL" },
+          { audienceType: "STUDENT", studentId },
+          { audienceType: "GROUP", groupId },
+          { audienceType: "DEPARTMENT", departmentId },
+        ],
+      },
+      orderBy: { createdAt: "desc" },
+      take: 5,
+      select: {
+        id: true,
+        title: true,
+        audienceType: true,
+        priority: true,
+        createdAt: true,
+        group: { select: { id: true, name: true } },
+      },
     }),
     prisma.attendanceRecord.findMany({
-      /* ... */
+      where: { studentId, session: { isDeleted: false } },
+      orderBy: { session: { date: "desc" } },
+      take: 5,
+      select: {
+        id: true,
+        status: true,
+        session: {
+          select: {
+            date: true,
+            subject: { select: { id: true, name: true } },
+          },
+        },
+      },
     }),
   ]);
 
+  // ── Attendance ───────────────────────────────────────────────
   const attendanceSummaryRaw = await groupByStatus(prisma.attendanceRecord, {
     studentId,
     session: { isDeleted: false },
   });
+
+  const present = countByStatus(attendanceSummaryRaw, "PRESENT");
+  const absent = countByStatus(attendanceSummaryRaw, "ABSENT");
+  const late = countByStatus(attendanceSummaryRaw, "LATE");
+  const attTotal = present + absent + late;
+  const overallAttendanceRate =
+    attTotal > 0 ? Math.round((present / attTotal) * 100) : 0;
 
   const monthlyAttendance = await Promise.all(
     months.map(async (m) => {
@@ -802,42 +879,72 @@ export const getStudentDashboard = async (userId: number) => {
         session: { date: { gte: m.start, lte: m.end }, isDeleted: false },
       });
 
-      const present = countByStatus(records, "PRESENT");
-      const absent = countByStatus(records, "ABSENT");
-      const late = countByStatus(records, "LATE");
-      const total = present + absent + late;
+      const p = countByStatus(records, "PRESENT");
+      const a = countByStatus(records, "ABSENT");
+      const l = countByStatus(records, "LATE");
+      const total = p + a + l;
 
       return {
         label: m.label,
         year: m.year,
         month: m.month,
-        present,
-        absent,
-        late,
+        present: p,
+        absent: a,
+        late: l,
         total,
-        attendanceRate: total > 0 ? Math.round((present / total) * 100) : 0,
+        attendanceRate: total > 0 ? Math.round((p / total) * 100) : 0,
       };
     }),
   );
 
-  // ... (rest of student dashboard logic remains the same)
+  // ── Practicals ───────────────────────────────────────────────
+  const submittedCount = practicalSubmissions.filter((s) => s.submitted).length;
+  const marked = practicalSubmissions.filter(
+    (s) => s.obtainedMarks != null && s.practical?.totalMarks,
+  );
+  const obtainedSum = marked.reduce((n, s) => n + Number(s.obtainedMarks), 0);
+  const totalMarksSum = marked.reduce(
+    (n, s) => n + Number(s.practical?.totalMarks ?? 0),
+    0,
+  );
+
+  // ── Diploma ──────────────────────────────────────────────────
+  const passedResults = diplomaResults.filter((r) => r.status === "PASSED");
 
   return {
     overview: {
-      /* ... */
+      totalSessions,
+      totalPracticals: practicalSubmissions.length,
+      submittedPracticals: submittedCount,
+      totalDiplomaResults: diplomaResults.length,
+      overallAttendanceRate,
     },
     attendance: {
-      /* ... */
+      present,
+      absent,
+      late,
+      total: attTotal,
+      attendanceRate: overallAttendanceRate,
+      recent: recentAttendance,
     },
     practicals: {
-      /* ... */
+      total: practicalSubmissions.length,
+      submitted: submittedCount,
+      pending: practicalSubmissions.length - submittedCount,
+      obtainedMarks: obtainedSum,
+      totalMarks: totalMarksSum,
+      percentage:
+        totalMarksSum > 0 ? Math.round((obtainedSum / totalMarksSum) * 100) : 0,
+      items: practicalSubmissions,
     },
     diploma: {
-      /* ... */
+      total: diplomaResults.length,
+      passed: passedResults.length,
+      latest: diplomaResults[0] ?? null,
+      results: diplomaResults,
     },
     monthly: {
       attendance: monthlyAttendance,
-      // practicals and marks...
     },
     recent: { myNotices, feedNotices },
   };

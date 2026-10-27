@@ -20,6 +20,8 @@ model User {
   admin   Admin?
   teacher Teacher?
   student Student?
+
+  @@index([email, isDeleted])
 }
 
 enum Role {
