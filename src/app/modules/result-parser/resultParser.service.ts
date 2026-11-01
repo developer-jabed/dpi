@@ -1,10 +1,18 @@
 /**
  * resultParser.service.ts
- * Unified parser – supports both 1st Semester (simple) and 2nd+ Semester (labeled) formats
- * Target: Dinajpur Polytechnic Institute (13085)
+ * Fast BTEB diploma result parser (all semesters) + bulk DB save.
+ *
+ * Speed plan
+ *  1. pdftotext (Poppler) extracts the whole PDF in ~1s (pdf-parse = fallback only)
+ *  2. Only the target institute's chunk is cleaned + parsed (a few KB)
+ *  3. One global regex; status is decided from the record SHAPE, not section headers
+ *  4. Text + parse results cached in memory by file hash (re-upload = instant)
+ *  5. DB: one INSERT .. ON CONFLICT per 1000 rows (auto-falls back to Prisma upsert)
  */
 
-import { DiplomaResultStatus, SubjectResultType } from '@prisma/client';
+import { spawn } from 'node:child_process';
+import { createHash } from 'node:crypto';
+import { DiplomaResultStatus, Prisma, SubjectResultType } from '@prisma/client';
 import httpStatus from 'http-status';
 import ApiError from '../../errors/api.error';
 import { prisma } from '../../shared/prisma';
@@ -17,444 +25,416 @@ import type {
 import { resultQueryService } from '../result/result.service';
 
 // ─── Constants ────────────────────────────────────────────────────────────────
-const TARGET_INSTITUTE_CODE = '13085' as const;
-const DB_CHUNK_SIZE = 100;
-const DB_CHUNK_CONCURRENCY = 8;
-const DROPOUT_SUBJECT_THRESHOLD = 4;
-const CACHE_WARM_CONCURRENCY = 10;
+const TARGET_INSTITUTE_CODE = '13085';
+const DROPOUT_SUBJECT_THRESHOLD = 4; // only used for old 1st-semester format
+const RAW_CHUNK = 1000;
+const SUBJECT_CHUNK = 2000;
+const FALLBACK_UPSERT_CONCURRENCY = 25;
+const CACHE_WARM_CONCURRENCY = 15;
+const PDFTOTEXT_TIMEOUT_MS = 60_000;
+const MEMORY_CACHE_LIMIT = 8;
 
 const SEMESTER_LABEL: Readonly<Record<string, string>> = {
-  '1': '1st',
-  '2': '2nd',
-  '3': '3rd',
-  '4': '4th',
-  '5': '5th',
-  '6': '6th',
-  '7': '7th',
-  '8': '8th',
+  '1': '1st', '2': '2nd', '3': '3rd', '4': '4th',
+  '5': '5th', '6': '6th', '7': '7th', '8': '8th',
 };
 
-// ─── Regex Catalogue ──────────────────────────────────────────────────────────
-const RE = {
-  institute: /^(\d{5})\s*[-–]\s*(.+?)(?:,|$)/i,
+// ─── Regexes (compiled once) ──────────────────────────────────────────────────
+const INSTITUTE_HEADER_RE = /^(\d{5}) - (.*)$/gm;
+// roll (…)  or  roll {…}
+const RECORD_RE = /(?<!\d)(\d{6})(?!\d)\s*(?:\(([^)]*)\)|\{([^}]*)\})/g;
+const RECORD_START_RE = /(?<!\d)(\d{6})(?!\d)\s*[({]/g;
+const GPA_RE = /gpa(\d):\s*(ref|\d+(?:\.\d+)?)?/g;
+const SUBJECT_RE = /(\d{5})\(/g;
 
-  sectionPassed: /^\s*1\s*$/,
-  sectionReferred: /^\s*2\s*$/,
-  sectionFailed: /^\s*25\s*$/,
-  sectionPassedText: /passed in all subjects/i,
-  sectionReferredText: /failed in three or less subjects/i,
-  sectionFailedText: /failed in four or more subjects/i,
+// Page header/footer + notice lines that can sit in the middle of a record
+const NOISE_LINE_RE =
+  /^(?:\d{1,2}$|Page \d+ of \d+|Memo No\.|Bangladesh Technical Education Board|Bngladesh Technical|Office of the Controller|Agargaon|Note:|\d\. The result is hereby|authority of correcting|\d\. After rescrutiny|\( ?Enrg\.|Controller of Examinations|Phone ?:|Copy of the published|\d{1,3}(?:-\d{2,3})?\. (?:Director|Secretary|Principal|Deputy|Assistant|Guard)|NOTICE|Date ?:|\(Md\. |Deputy Controller|Assistant Controller|(?:\d{1,2}\s+)?It is to be notified|are listed below|listed below)/i;
 
-  semester: /(\d)(?:st|nd|rd|th)\s+Semester/i,
-  examYearNear: /(?:Examination|Result|held).*?(20\d{2})/i,
-  regulation: /(?:Regulation|Reg\.)\s*[:\s]*(\d{4})/i,
-  yearAny: /\b(20\d{2})\b/g,
-
-  // Format A – 1st semester simple
-  passedSimple: /(\d{5,7})\s*\(\s*([\d.]+)\s*\)/g,
-  bracedSimple: /(\d{5,7})\s*\{\s*([^}]*)\}/g,
-
-  // Format B – 2nd+ semester labeled
-  passedLabeled: /(\d{5,7})\s*\(\s*((?:gpa\d+:\s*[\d.]+(?:\s*,\s*)?)+)\s*\)/gi,
-  bracedLabeled:
-    /(\d{5,7})\s*\{\s*((?:gpa\d+:\s*(?:ref|[\d.]+)(?:\s*,\s*)?)*(?:ref_sub:\s*)?([^}]+))\}/gi,
-
-  subjectCode: /(\d{5})(?:\([TP]+\))?/g,
-  gpaPair: /gpa(\d+):\s*([\d.]+|ref)/gi,
-} as const;
-
-// ─── Helpers ──────────────────────────────────────────────────────────────────
-function cleanText(text: string): string {
-  return text
-    .replace(/\r\n/g, '\n')
-    .replace(/\r/g, '\n')
-    .replace(/\t/g, ' ')
-    .replace(/\u00A0/g, ' ')
-    .replace(/[^\S\n]+/g, ' ')
-    .trim();
-}
-
-function joinContinuationLines(rawLines: string[]): string[] {
-  const joined: string[] = [];
-  let buffer = '';
-
-  for (const line of rawLines) {
-    const trimmed = line.trim();
-    if (!trimmed) {
-      if (buffer) {
-        joined.push(buffer);
-        buffer = '';
-      }
-      continue;
+// ─── Small LRU ────────────────────────────────────────────────────────────────
+class Lru<V> {
+  private map = new Map<string, V>();
+  constructor(private limit: number) {}
+  get(k: string): V | undefined {
+    const v = this.map.get(k);
+    if (v !== undefined) {
+      this.map.delete(k);
+      this.map.set(k, v);
     }
-
-    // Continue braced record
-    if (buffer && buffer.includes('{') && !buffer.includes('}')) {
-      buffer += ' ' + trimmed;
-      if (buffer.includes('}')) {
-        joined.push(buffer);
-        buffer = '';
-      }
-      continue;
+    return v;
+  }
+  set(k: string, v: V) {
+    this.map.delete(k);
+    this.map.set(k, v);
+    if (this.map.size > this.limit) {
+      this.map.delete(this.map.keys().next().value as string);
     }
-
-    if (buffer) joined.push(buffer);
-    buffer = trimmed;
   }
-
-  if (buffer) joined.push(buffer);
-  return joined;
 }
 
-function extractSubjects(text: string): string[] {
-  const codes = new Set<string>();
-  const re = new RegExp(RE.subjectCode.source, 'g');
-  let m: RegExpExecArray | null;
-  while ((m = re.exec(text)) !== null) {
-    codes.add(m[1]);
-  }
-  return Array.from(codes);
+const textCache = new Lru<string>(3);
+const parseCache = new Lru<ParseResult>(MEMORY_CACHE_LIMIT);
+const inflight = new Map<string, Promise<ParseResult>>();
+
+// ─── PDF → text ───────────────────────────────────────────────────────────────
+function pdftotext(buffer: Buffer): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const p = spawn('pdftotext', ['-enc', 'UTF-8', '-nopgbrk', '-', '-']);
+    const chunks: Buffer[] = [];
+    const timer = setTimeout(() => {
+      p.kill('SIGKILL');
+      reject(new Error('pdftotext timeout'));
+    }, PDFTOTEXT_TIMEOUT_MS);
+
+    p.stdout.on('data', (c: Buffer) => chunks.push(c));
+    p.on('error', (e) => { clearTimeout(timer); reject(e); });
+    p.stdin.on('error', () => { /* EPIPE if process dies early; 'close' reports it */ });
+    p.on('close', (code) => {
+      clearTimeout(timer);
+      if (code === 0) resolve(Buffer.concat(chunks).toString('utf8'));
+      else reject(new Error(`pdftotext exited with code ${code}`));
+    });
+    p.stdin.end(buffer);
+  });
 }
 
-function extractGpas(text: string): Record<string, number | null> {
-  const gpas: Record<string, number | null> = {};
-  const re = new RegExp(RE.gpaPair.source, 'gi');
-  let m: RegExpExecArray | null;
-  while ((m = re.exec(text)) !== null) {
-    gpas[`gpa${m[1]}`] = m[2].toLowerCase() === 'ref' ? null : parseFloat(m[2]);
+async function extractText(buffer: Buffer, hash: string): Promise<string> {
+  const cached = textCache.get(hash);
+  if (cached) return cached;
+
+  let text: string;
+  try {
+    text = await pdftotext(buffer);
+  } catch (err) {
+    console.warn(`[Parser] pdftotext failed (${(err as Error).message}), using pdf-parse fallback (slow)`);
+    const pdf = (await import('pdf-parse')).default;
+    text = (await pdf(buffer)).text;
   }
-  return gpas;
+  text = text.replace(/\r\n?/g, '\n').replace(/\u00A0/g, ' ');
+  textCache.set(hash, text);
+  return text;
+}
+
+// ─── Text helpers ─────────────────────────────────────────────────────────────
+function extractMeta(text: string, filename?: string): ExamMeta {
+  const head = text.slice(0, 8000);
+  const sem = head.match(/(\d)(?:st|nd|rd|th)\s+Semester/i)?.[1] ?? '1';
+  const regulation =
+    head.match(/\((\d{4})\s+Regulation\)/i)?.[1] ??
+    head.match(/(?:Regulation|Reg\.)\s*[:\s]*(\d{4})/i)?.[1] ??
+    filename?.match(/(\d{4})_Regulation/i)?.[1] ??
+    '2022';
+  const examYear = parseInt(
+    head.match(/ENGINEERING,\s*(20\d{2})/i)?.[1] ??
+      head.match(/\b(20\d{2})\b/)?.[1] ??
+      '2025',
+    10,
+  );
+  return {
+    semesterName: SEMESTER_LABEL[sem] ?? `${sem}th`,
+    examYear,
+    regulation,
+  };
+}
+
+function sliceInstitute(text: string, code: string) {
+  const headers: { code: string; name: string; start: number }[] = [];
+  INSTITUTE_HEADER_RE.lastIndex = 0;
+  let m: RegExpExecArray | null;
+  while ((m = INSTITUTE_HEADER_RE.exec(text)) !== null) {
+    headers.push({
+      code: m[1],
+      name: m[2].split(',')[0].trim(),
+      start: m.index,
+    });
+  }
+  const i = headers.findIndex((h) => h.code === code);
+  if (i < 0) return null;
+  const end = i + 1 < headers.length ? headers[i + 1].start : text.length;
+  return { name: headers[i].name, chunk: text.slice(headers[i].start, end) };
+}
+
+/** Drops page header/footer lines (they can split a record) and flattens to one line. */
+function cleanChunk(chunk: string): string {
+  const out: string[] = [];
+  const lines = chunk.split('\n');
+  for (let i = 1; i < lines.length; i++) { // i=1 skips the institute header line
+    const line = lines[i].trim();
+    if (line && !NOISE_LINE_RE.test(line)) out.push(line);
+  }
+  return out.join(' ').replace(/\s+/g, ' ');
 }
 
 function emptyGpas() {
   return {
-    gpa1: null as number | null,
-    gpa2: null as number | null,
-    gpa3: null as number | null,
-    gpa4: null as number | null,
-    gpa5: null as number | null,
-    gpa6: null as number | null,
+    gpa1: null as number | null, gpa2: null as number | null,
+    gpa3: null as number | null, gpa4: null as number | null,
+    gpa5: null as number | null, gpa6: null as number | null,
     gpa7: null as number | null,
   };
 }
 
-// ─── Meta Extraction ──────────────────────────────────────────────────────────
-function extractExamMeta(text: string, filename?: string): ExamMeta {
-  const semesterMatch = text.match(RE.semester);
-  const semesterNum = semesterMatch?.[1] ?? '1';
-  const semesterName = SEMESTER_LABEL[semesterNum] ?? `${semesterNum}th`;
-
-  let examYear = 2025;
-  const near = text.match(RE.examYearNear);
-  if (near) {
-    examYear = parseInt(near[1], 10);
-  } else {
-    const years = [...text.matchAll(RE.yearAny)].map((m) => parseInt(m[1], 10));
-    if (years.length) {
-      const freq: Record<number, number> = {};
-      for (const y of years) freq[y] = (freq[y] || 0) + 1;
-      examYear = Number(
-        Object.entries(freq).sort((a, b) => b[1] - a[1])[0][0],
-      );
-    }
+function parseGpas(body: string) {
+  const g = emptyGpas();
+  GPA_RE.lastIndex = 0;
+  let m: RegExpExecArray | null;
+  while ((m = GPA_RE.exec(body)) !== null) {
+    const key = `gpa${m[1]}` as keyof typeof g;
+    if (key in g) g[key] = m[2] && m[2] !== 'ref' ? parseFloat(m[2]) : null;
   }
-
-  let regulation = '2022';
-  const regMatch = text.match(RE.regulation);
-  if (regMatch) {
-    regulation = regMatch[1];
-  } else if (filename) {
-    const fnReg = filename.match(/(\d{4})_Regulation/i);
-    if (fnReg) regulation = fnReg[1];
-  }
-
-  return { semesterName, examYear, regulation };
+  return g;
 }
 
-// ─── Parsing Core ─────────────────────────────────────────────────────────────
-function parsePassedLine(
-  line: string,
+function parseSubjects(body: string): string[] {
+  const set = new Set<string>();
+  SUBJECT_RE.lastIndex = 0;
+  let m: RegExpExecArray | null;
+  while ((m = SUBJECT_RE.exec(body)) !== null) set.add(m[1]);
+  return [...set];
+}
+
+// ─── Core parse ───────────────────────────────────────────────────────────────
+function parseChunk(
+  flat: string,
   instituteCode: string,
   instituteName: string,
   meta: ExamMeta,
 ): ParsedStudent[] {
   const students: ParsedStudent[] = [];
+  const seen = new Set<string>();
+  const semNum = parseInt(meta.semesterName, 10) || 1;
 
-  // Format A – simple GPA
-  const simpleRe = new RegExp(RE.passedSimple.source, 'g');
+  const base = (roll: string) => ({
+    roll,
+    instituteCode,
+    instituteName,
+    semesterName: meta.semesterName,
+    examYear: meta.examYear,
+    regulation: meta.regulation,
+  });
+
+  RECORD_RE.lastIndex = 0;
   let m: RegExpExecArray | null;
-  while ((m = simpleRe.exec(line)) !== null) {
-    const gpas = emptyGpas();
-    // Current semester GPA goes into the corresponding slot
-    const semNum = parseInt(meta.semesterName) || 1;
-    if (semNum <= 7) {
-      (gpas as any)[`gpa${semNum}`] = parseFloat(m[2]);
+  while ((m = RECORD_RE.exec(flat)) !== null) {
+    const roll = m[1];
+    if (seen.has(roll)) continue;
+    seen.add(roll);
+
+    // ── PASSED:  roll ( … )
+    if (m[2] !== undefined) {
+      const body = m[2];
+      let gpas = emptyGpas();
+      if (body.includes('gpa')) {
+        gpas = parseGpas(body);
+      } else {
+        const v = body.match(/\d+(?:\.\d+)?/)?.[0]; // old 1st-semester "(3.45)"
+        if (v && semNum <= 7) (gpas as any)[`gpa${semNum}`] = parseFloat(v);
+      }
+      students.push({
+        ...base(roll),
+        status: DiplomaResultStatus.PASSED,
+        ...gpas,
+        referredSubjects: [],
+        failedSubjects: [],
+      });
+      continue;
     }
 
-    students.push({
-      roll: m[1],
-      instituteCode,
-      instituteName,
-      semesterName: meta.semesterName,
-      examYear: meta.examYear,
-      regulation: meta.regulation,
-      status: DiplomaResultStatus.PASSED,
-      ...gpas,
-      referredSubjects: [],
-      failedSubjects: [],
-    });
-  }
+    // ── { … }  → REFERRED (has gpa labels) or FAILED (subjects only)
+    const body = m[3] ?? '';
+    const hasGpa = body.includes('gpa');
+    const subjectPart = body.includes('ref_sub:') ? body.split('ref_sub:')[1] : body;
+    const subjects = parseSubjects(subjectPart);
 
-  // Format B – labeled
-  const labeledRe = new RegExp(RE.passedLabeled.source, 'gi');
-  while ((m = labeledRe.exec(line)) !== null) {
-    const extracted = extractGpas(m[2]);
-    const gpas = emptyGpas();
-    Object.assign(gpas, extracted);
+    // 2nd+ semester: shape decides. 1st semester (no gpa labels anywhere): old count rule.
+    const isReferred = hasGpa
+      ? true
+      : semNum === 1 && subjects.length < DROPOUT_SUBJECT_THRESHOLD;
 
     students.push({
-      roll: m[1],
-      instituteCode,
-      instituteName,
-      semesterName: meta.semesterName,
-      examYear: meta.examYear,
-      regulation: meta.regulation,
-      status: DiplomaResultStatus.PASSED,
-      ...gpas,
-      referredSubjects: [],
-      failedSubjects: [],
+      ...base(roll),
+      status: isReferred ? DiplomaResultStatus.REFERRED : DiplomaResultStatus.FAILED,
+      ...(hasGpa ? parseGpas(body) : emptyGpas()),
+      referredSubjects: isReferred ? subjects : [],
+      failedSubjects: isReferred ? [] : subjects,
     });
   }
 
   return students;
 }
 
-function parseBracedLine(
-  line: string,
-  instituteCode: string,
-  instituteName: string,
-  meta: ExamMeta,
-  forcedStatus: DiplomaResultStatus,
-): ParsedStudent | null {
-  // Format B – labeled
-  const labeledRe = new RegExp(RE.bracedLabeled.source, 'gi');
-  let m = labeledRe.exec(line);
-  if (m) {
-    const roll = m[1];
-    const body = m[2] || '';
-    const subjects = extractSubjects(body);
-    const extracted = extractGpas(body);
-    const gpas = emptyGpas();
-    Object.assign(gpas, extracted);
-
-    const isFailed =
-      forcedStatus === DiplomaResultStatus.FAILED ||
-      subjects.length >= DROPOUT_SUBJECT_THRESHOLD;
-
-    return {
-      roll,
-      instituteCode,
-      instituteName,
-      semesterName: meta.semesterName,
-      examYear: meta.examYear,
-      regulation: meta.regulation,
-      status: isFailed ? DiplomaResultStatus.FAILED : DiplomaResultStatus.REFERRED,
-      ...gpas,
-      referredSubjects: isFailed ? [] : subjects,
-      failedSubjects: isFailed ? subjects : [],
-    };
-  }
-
-  // Format A – simple subjects
-  const simpleRe = new RegExp(RE.bracedSimple.source, 'g');
-  m = simpleRe.exec(line);
-  if (m) {
-    const roll = m[1];
-    const subjects = extractSubjects(m[2]);
-    const isFailed =
-      forcedStatus === DiplomaResultStatus.FAILED ||
-      subjects.length >= DROPOUT_SUBJECT_THRESHOLD;
-
-    return {
-      roll,
-      instituteCode,
-      instituteName,
-      semesterName: meta.semesterName,
-      examYear: meta.examYear,
-      regulation: meta.regulation,
-      status: isFailed ? DiplomaResultStatus.FAILED : DiplomaResultStatus.REFERRED,
-      ...emptyGpas(),
-      referredSubjects: isFailed ? [] : subjects,
-      failedSubjects: isFailed ? subjects : [],
-    };
-  }
-
-  return null;
+/** Distinct rolls that start a record ("roll (" or "roll {") in the given text. */
+function recordRolls(flat: string): Set<string> {
+  const rolls = new Set<string>();
+  for (const m of flat.matchAll(RECORD_START_RE)) rolls.add(m[1]);
+  return rolls;
 }
 
-function processLines(lines: string[], meta: ExamMeta): ParsedStudent[] {
-  const students: ParsedStudent[] = [];
-  let currentInstituteCode: string | null = null;
-  let currentInstituteName = '';
-  let currentSection: 'PASSED' | 'REFERRED' | 'FAILED' | null = null;
-
-  for (const line of lines) {
-    const instMatch = line.match(RE.institute);
-    if (instMatch) {
-      currentInstituteCode = instMatch[1];
-      currentInstituteName = instMatch[2].trim();
-      currentSection = null;
-      continue;
-    }
-
-    if (currentInstituteCode !== TARGET_INSTITUTE_CODE) continue;
-
-    if (RE.sectionPassed.test(line) || RE.sectionPassedText.test(line)) {
-      currentSection = 'PASSED';
-      continue;
-    }
-    if (RE.sectionReferred.test(line) || RE.sectionReferredText.test(line)) {
-      currentSection = 'REFERRED';
-      continue;
-    }
-    if (RE.sectionFailed.test(line) || RE.sectionFailedText.test(line)) {
-      currentSection = 'FAILED';
-      continue;
-    }
-
-    if (!currentSection) continue;
-
-    if (currentSection === 'PASSED') {
-      students.push(
-        ...parsePassedLine(
-          line,
-          currentInstituteCode,
-          currentInstituteName,
-          meta,
-        ),
-      );
-    } else {
-      const student = parseBracedLine(
-        line,
-        currentInstituteCode,
-        currentInstituteName,
-        meta,
-        currentSection === 'FAILED'
-          ? DiplomaResultStatus.FAILED
-          : DiplomaResultStatus.REFERRED,
-      );
-      if (student) students.push(student);
-    }
-  }
-
-  return students;
-}
-
-// ─── Public Parse ─────────────────────────────────────────────────────────────
+// ─── Public parse ─────────────────────────────────────────────────────────────
 export async function parseResultPdf(
   buffer: Buffer,
   filename?: string,
+  instituteCode: string = TARGET_INSTITUTE_CODE,
 ): Promise<ParseResult> {
-  const pdf = (await import('pdf-parse')).default;
-  const data = await pdf(buffer);
-  const rawText = cleanText(data.text);
-  const lines = joinContinuationLines(rawText.split('\n'));
+  const hash = createHash('sha1').update(buffer).digest('hex');
+  const key = `${hash}:${instituteCode}`;
 
-  const meta = extractExamMeta(rawText, filename);
-  console.log(
-    `[Meta] semesterName="${meta.semesterName}" | examYear=${meta.examYear} | regulation="${meta.regulation}"`,
-  );
+  const hit = parseCache.get(key);
+  if (hit) {
+    console.log(`[Parser] cache hit (${hit.totalParsed} students)`);
+    return hit;
+  }
+  const running = inflight.get(key);
+  if (running) return running;
 
-  const students = processLines(lines, meta);
+  const job = (async () => {
+    const t0 = Date.now();
+    const text = await extractText(buffer, hash);
+    const t1 = Date.now();
 
-  const summary = {
-    PASSED: students.filter((s) => s.status === DiplomaResultStatus.PASSED).length,
-    REFERRED: students.filter((s) => s.status === DiplomaResultStatus.REFERRED).length,
-    FAILED: students.filter((s) => s.status === DiplomaResultStatus.FAILED).length,
-  };
+    const meta = extractMeta(text, filename);
+    const sliced = sliceInstitute(text, instituteCode);
+    if (!sliced) {
+      throw new ApiError(
+        httpStatus.BAD_REQUEST,
+        `Institute ${instituteCode} not found in this PDF`,
+      );
+    }
 
-  console.log(
-    `[Parser] PASSED=${summary.PASSED} | REFERRED=${summary.REFERRED} | FAILED=${summary.FAILED} | TOTAL=${students.length}`,
-  );
+    // Pass 1: cleaned text (page footers removed so split records join up)
+    let students = parseChunk(cleanChunk(sliced.chunk), instituteCode, sliced.name, meta);
 
-  return {
-    meta,
-    totalParsed: students.length,
-    students,
-  };
+    // Independent completeness check on the UNCLEANED text: every "roll (" / "roll {"
+    // in the institute's section must end up as a parsed student.
+    const rawFlat = sliced.chunk.replace(/\s+/g, ' ');
+    const expectedRolls = recordRolls(rawFlat);
+
+    if (students.length !== expectedRolls.size) {
+      // Pass 2: parse the raw text and add anything pass 1 missed
+      const have = new Set(students.map((s) => s.roll));
+      for (const s of parseChunk(rawFlat, instituteCode, sliced.name, meta)) {
+        if (!have.has(s.roll)) students.push(s);
+      }
+    }
+
+    if (students.length !== expectedRolls.size) {
+      const got = new Set(students.map((s) => s.roll));
+      const lost = [...expectedRolls].filter((r) => !got.has(r));
+      // Never silently skip results: fail loudly instead of saving a partial import
+      throw new ApiError(
+        httpStatus.UNPROCESSABLE_ENTITY,
+        `Parsed ${students.length} of ${expectedRolls.size} records for ${instituteCode}. ` +
+          `Missing rolls: ${lost.slice(0, 20).join(', ')}`,
+      );
+    }
+
+    const summary = { PASSED: 0, REFERRED: 0, FAILED: 0 };
+    for (const s of students) summary[s.status as 'PASSED' | 'REFERRED' | 'FAILED']++;
+
+    console.log(
+      `[Parser] ${meta.semesterName} sem | ${meta.examYear} | reg ${meta.regulation} | ` +
+        `PASSED=${summary.PASSED} REFERRED=${summary.REFERRED} FAILED=${summary.FAILED} ` +
+        `TOTAL=${students.length} | extract=${t1 - t0}ms parse=${Date.now() - t1}ms`,
+    );
+
+    const result: ParseResult = { meta, totalParsed: students.length, students };
+    parseCache.set(key, result);
+    return result;
+  })().finally(() => inflight.delete(key));
+
+  inflight.set(key, job);
+  return job;
 }
 
-// ─── DB Helpers ───────────────────────────────────────────────────────────────
-// ─── DB Helpers (High Performance) ────────────────────────────────────────────
-
+// ─── DB helpers ───────────────────────────────────────────────────────────────
 async function resolveSubjects(codes: string[]): Promise<Map<string, number>> {
   if (!codes.length) return new Map();
-  const subjects = await prisma.subject.findMany({
+  const rows = await prisma.subject.findMany({
     where: { code: { in: codes } },
     select: { id: true, code: true },
   });
-  return new Map(subjects.map((s) => [s.code, s.id]));
+  return new Map(rows.map((s) => [s.code, s.id]));
 }
 
 async function getStudentIdMap(rolls: string[]): Promise<Map<string, number>> {
   const map = new Map<string, number>();
-  const BATCH = 800;
-
+  const BATCH = 5000;
   for (let i = 0; i < rolls.length; i += BATCH) {
-    const slice = rolls.slice(i, i + BATCH);
-    const students = await prisma.student.findMany({
-      where: { roll: { in: slice }, isDeleted: false },
+    const rows = await prisma.student.findMany({
+      where: { roll: { in: rolls.slice(i, i + BATCH) }, isDeleted: false },
       select: { id: true, roll: true },
     });
-    for (const s of students) map.set(s.roll, s.id);
+    for (const s of rows) map.set(s.roll, s.id);
   }
   return map;
 }
 
-// ─── Public Save (Optimized) ──────────────────────────────────────────────────
-export async function saveParsedResults(
-  parseResult: ParseResult,
-): Promise<SaveResult> {
-  const { students } = parseResult;
+/** One INSERT … ON CONFLICT per chunk. Adjust table/column names if your schema uses @@map/@map. */
+async function bulkUpsertRaw(
+  students: ParsedStudent[],
+  studentIdMap: Map<string, number>,
+): Promise<Map<string, number>> {
+  const idByRoll = new Map<string, number>();
 
-  if (!students.length) {
-    throw new ApiError(httpStatus.BAD_REQUEST, 'No students parsed from PDF');
+  for (let i = 0; i < students.length; i += RAW_CHUNK) {
+    const c = students.slice(i, i + RAW_CHUNK);
+    const rows = await prisma.$queryRaw<{ id: number; roll: string }[]>(Prisma.sql`
+      INSERT INTO "DiplomaResult"
+        (roll, status, gpa1, gpa2, gpa3, gpa4, gpa5, gpa6, gpa7,
+         "semesterName", "examYear", regulation, "instituteCode", "instituteName",
+         "studentId", "isDeleted", "createdAt", "updatedAt")
+      SELECT roll, status::"DiplomaResultStatus", g1, g2, g3, g4, g5, g6, g7,
+             sem, yr, reg, ic, iname, sid, false, now(), now()
+      FROM unnest(
+        ${c.map((s) => s.roll)}::text[],
+        ${c.map((s) => s.status as string)}::text[],
+        ${c.map((s) => s.gpa1)}::float8[], ${c.map((s) => s.gpa2)}::float8[],
+        ${c.map((s) => s.gpa3)}::float8[], ${c.map((s) => s.gpa4)}::float8[],
+        ${c.map((s) => s.gpa5)}::float8[], ${c.map((s) => s.gpa6)}::float8[],
+        ${c.map((s) => s.gpa7)}::float8[],
+        ${c.map((s) => s.semesterName)}::text[],
+        ${c.map((s) => s.examYear)}::int[],
+        ${c.map((s) => s.regulation)}::text[],
+        ${c.map((s) => s.instituteCode)}::text[],
+        ${c.map((s) => s.instituteName)}::text[],
+        ${c.map((s) => studentIdMap.get(s.roll) ?? null)}::int[]
+      ) AS t(roll, status, g1, g2, g3, g4, g5, g6, g7, sem, yr, reg, ic, iname, sid)
+      ON CONFLICT (roll, "semesterName", "examYear", regulation) DO UPDATE SET
+        status = EXCLUDED.status,
+        gpa1 = EXCLUDED.gpa1, gpa2 = EXCLUDED.gpa2, gpa3 = EXCLUDED.gpa3,
+        gpa4 = EXCLUDED.gpa4, gpa5 = EXCLUDED.gpa5, gpa6 = EXCLUDED.gpa6,
+        gpa7 = EXCLUDED.gpa7,
+        "instituteCode" = EXCLUDED."instituteCode",
+        "instituteName" = EXCLUDED."instituteName",
+        "studentId" = EXCLUDED."studentId",
+        "isDeleted" = false,
+        "updatedAt" = now()
+      RETURNING id, roll
+    `);
+    for (const r of rows) idByRoll.set(r.roll, r.id);
   }
+  return idByRoll;
+}
 
-  console.log(`[DB] Preparing to save ${students.length} records...`);
+/** Same behaviour as the original code, used only if the raw SQL path fails. */
+async function fallbackUpsert(
+  students: ParsedStudent[],
+  studentIdMap: Map<string, number>,
+): Promise<Map<string, number>> {
+  const idByRoll = new Map<string, number>();
 
-  // 1. Resolve subjects once
-  const allCodes = [
-    ...new Set([
-      ...students.flatMap((s) => s.referredSubjects),
-      ...students.flatMap((s) => s.failedSubjects),
-    ]),
-  ];
-  const subjectMap = await resolveSubjects(allCodes);
-
-  const missing = allCodes.filter((c) => !subjectMap.has(c));
-  if (missing.length) {
-    console.warn(
-      `[DB] ${missing.length} subject code(s) missing:`,
-      missing.slice(0, 10).join(', '),
-    );
-  }
-
-  // 2. Pre-fetch all student IDs
-  const studentIdMap = await getStudentIdMap(students.map((s) => s.roll));
-  console.log(`[DB] Matched ${studentIdMap.size} students`);
-
-  // 3. Upsert all DiplomaResult records with high concurrency
-  const UPSERT_CONCURRENCY = 25; // safe for most Postgres
-  const diplomaResultIds: number[] = [];
-  const orphanRolls: string[] = [];
-  let linkedCount = 0;
-
-  // Helper to process one student
   const upsertOne = async (s: ParsedStudent) => {
     const studentId = studentIdMap.get(s.roll) ?? null;
-
-    const result = await prisma.diplomaResult.upsert({
+    const data = {
+      status: s.status,
+      gpa1: s.gpa1, gpa2: s.gpa2, gpa3: s.gpa3, gpa4: s.gpa4,
+      gpa5: s.gpa5, gpa6: s.gpa6, gpa7: s.gpa7,
+      instituteCode: s.instituteCode,
+      instituteName: s.instituteName,
+      studentId,
+      isDeleted: false,
+    };
+    const r = await prisma.diplomaResult.upsert({
       where: {
         roll_semesterName_examYear_regulation: {
           roll: s.roll,
@@ -464,83 +444,77 @@ export async function saveParsedResults(
         },
       },
       create: {
+        ...data,
         roll: s.roll,
-        status: s.status,
-        gpa1: s.gpa1,
-        gpa2: s.gpa2,
-        gpa3: s.gpa3,
-        gpa4: s.gpa4,
-        gpa5: s.gpa5,
-        gpa6: s.gpa6,
-        gpa7: s.gpa7,
         semesterName: s.semesterName,
         examYear: s.examYear,
         regulation: s.regulation,
-        instituteCode: s.instituteCode,
-        instituteName: s.instituteName,
-        studentId,
-        isDeleted: false,
       },
-      update: {
-        status: s.status,
-        gpa1: s.gpa1,
-        gpa2: s.gpa2,
-        gpa3: s.gpa3,
-        gpa4: s.gpa4,
-        gpa5: s.gpa5,
-        gpa6: s.gpa6,
-        gpa7: s.gpa7,
-        instituteCode: s.instituteCode,
-        instituteName: s.instituteName,
-        studentId,
-        isDeleted: false,
-      },
+      update: data,
       select: { id: true },
     });
-
-    if (studentId) linkedCount++;
-    else orphanRolls.push(s.roll);
-
-    return { id: result.id, student: s };
+    idByRoll.set(s.roll, r.id);
   };
 
-  // Process in concurrent batches
-  const results: { id: number; student: ParsedStudent }[] = [];
+  for (let i = 0; i < students.length; i += FALLBACK_UPSERT_CONCURRENCY) {
+    await Promise.all(students.slice(i, i + FALLBACK_UPSERT_CONCURRENCY).map(upsertOne));
+  }
+  return idByRoll;
+}
 
-  for (let i = 0; i < students.length; i += UPSERT_CONCURRENCY) {
-    const batch = students.slice(i, i + UPSERT_CONCURRENCY);
-    const batchResults = await Promise.all(batch.map(upsertOne));
-    results.push(...batchResults);
-
-    if ((i / UPSERT_CONCURRENCY) % 4 === 0) {
-      console.log(`[DB] Upserted ${Math.min(i + UPSERT_CONCURRENCY, students.length)}/${students.length}`);
-    }
+// ─── Public save ──────────────────────────────────────────────────────────────
+export async function saveParsedResults(parseResult: ParseResult): Promise<SaveResult> {
+  const { students } = parseResult;
+  if (!students.length) {
+    throw new ApiError(httpStatus.BAD_REQUEST, 'No students parsed from PDF');
   }
 
-  const savedCount = results.length;
-  console.log(`[DB] All ${savedCount} DiplomaResult records upserted`);
+  const t0 = Date.now();
 
-  // 4. Collect all diplomaResult IDs
-  const allResultIds = results.map((r) => r.id);
+  // 1. Subjects + student ids (parallel)
+  const allCodes = [
+    ...new Set(students.flatMap((s) => [...s.referredSubjects, ...s.failedSubjects])),
+  ];
+  const [subjectMap, studentIdMap] = await Promise.all([
+    resolveSubjects(allCodes),
+    getStudentIdMap(students.map((s) => s.roll)),
+  ]);
 
-  // 5. Delete ALL old subjects in one go (very fast)
-  if (allResultIds.length > 0) {
-    await prisma.diplomaResultSubject.deleteMany({
-      where: { diplomaResultId: { in: allResultIds } },
-    });
-    console.log(`[DB] Cleared old subjects`);
+  const missing = allCodes.filter((c) => !subjectMap.has(c));
+  if (missing.length) {
+    console.warn(`[DB] ${missing.length} subject code(s) missing:`, missing.slice(0, 10).join(', '));
   }
 
-  // 6. Build all subject rows and insert in large batches
+  // 2. Bulk upsert results (raw SQL, fallback to Prisma upsert)
+  let idByRoll: Map<string, number>;
+  try {
+    idByRoll = await bulkUpsertRaw(students, studentIdMap);
+  } catch (err) {
+    console.warn(`[DB] raw bulk upsert failed (${(err as Error).message}). Falling back to Prisma upsert.`);
+    idByRoll = await fallbackUpsert(students, studentIdMap);
+  }
+  console.log(`[DB] ${idByRoll.size} DiplomaResult rows upserted in ${Date.now() - t0}ms`);
+
+  // 3. Replace subjects atomically
+  const resultIds: number[] = [];
   const subjectRows: {
     diplomaResultId: number;
     subjectCode: string;
     subjectId: number | null;
     type: SubjectResultType;
   }[] = [];
+  const orphanRolls: string[] = [];
+  let linkedCount = 0;
 
-  for (const { id, student } of results) {
-    for (const code of student.referredSubjects) {
+  for (const s of students) {
+    const id = idByRoll.get(s.roll);
+    if (id === undefined) continue;
+    resultIds.push(id);
+
+    if (studentIdMap.has(s.roll)) linkedCount++;
+    else orphanRolls.push(s.roll);
+
+    for (const code of s.referredSubjects) {
       subjectRows.push({
         diplomaResultId: id,
         subjectCode: code,
@@ -548,7 +522,7 @@ export async function saveParsedResults(
         type: SubjectResultType.REFERRED,
       });
     }
-    for (const code of student.failedSubjects) {
+    for (const code of s.failedSubjects) {
       subjectRows.push({
         diplomaResultId: id,
         subjectCode: code,
@@ -558,38 +532,37 @@ export async function saveParsedResults(
     }
   }
 
-  // Insert subjects in large chunks
-  const SUBJECT_BATCH = 1000;
-  for (let i = 0; i < subjectRows.length; i += SUBJECT_BATCH) {
-    const slice = subjectRows.slice(i, i + SUBJECT_BATCH);
-    if (slice.length) {
-      await prisma.diplomaResultSubject.createMany({ data: slice });
-    }
+  const ops: Prisma.PrismaPromise<unknown>[] = [];
+  for (let i = 0; i < resultIds.length; i += 10_000) {
+    ops.push(
+      prisma.diplomaResultSubject.deleteMany({
+        where: { diplomaResultId: { in: resultIds.slice(i, i + 10_000) } },
+      }),
+    );
   }
-  console.log(`[DB] Inserted ${subjectRows.length} subject rows`);
+  for (let i = 0; i < subjectRows.length; i += SUBJECT_CHUNK) {
+    ops.push(prisma.diplomaResultSubject.createMany({ data: subjectRows.slice(i, i + SUBJECT_CHUNK) }));
+  }
+  await prisma.$transaction(ops);
+  console.log(`[DB] ${subjectRows.length} subject rows saved | total ${Date.now() - t0}ms`);
 
-  // 7. Cache
+  // 4. Cache: invalidate now, warm in background
   const rolls = students.map((s) => s.roll);
-
-  console.log(`[Cache] Invalidating ${rolls.length} keys...`);
   await resultQueryService.invalidateResultCache(rolls);
 
-  console.log(`[Cache] Warming cache (background)...`);
-  (async () => {
-    const WARM = 15;
-    for (let i = 0; i < rolls.length; i += WARM) {
-      const slice = rolls.slice(i, i + WARM);
+  void (async () => {
+    for (let i = 0; i < rolls.length; i += CACHE_WARM_CONCURRENCY) {
       await Promise.all(
-        slice.map((roll) =>
-          resultQueryService.getResultByRoll(roll).catch(() => null),
-        ),
+        rolls
+          .slice(i, i + CACHE_WARM_CONCURRENCY)
+          .map((roll) => resultQueryService.getResultByRoll(roll).catch(() => null)),
       );
     }
-    console.log(`[Cache] Warming finished`);
+    console.log('[Cache] warming finished');
   })();
 
   return {
-    savedCount,
+    savedCount: idByRoll.size,
     linkedCount,
     orphanCount: orphanRolls.length,
     skippedCount: 0,
