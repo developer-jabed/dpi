@@ -1,6 +1,7 @@
 import { prisma } from "../../shared/prisma";
 import ApiError from "../../errors/api.error";
 import httpStatus from "http-status";
+import { memoryCache, TTL, cacheKey, invalidateMasterData, invalidateNotices, invalidateEvents, invalidateRoutines, invalidateStudents, invalidateTeachers, invalidateOverview, invalidateDashboardCache } from "../../shared/memoryCache";
 
 const getMyOverview = async (user: { userId: number; role: string }) => {
   // ────────────────────────────────────────────────

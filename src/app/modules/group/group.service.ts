@@ -4,6 +4,7 @@ import httpStatus from "http-status";
 import ApiError from "../../errors/api.error";
 import { paginationHelper } from "../../helper/paginationHelper";
 import { Prisma } from "@prisma/client";
+import { memoryCache, TTL, cacheKey, invalidateMasterData, invalidateNotices, invalidateEvents, invalidateRoutines, invalidateStudents, invalidateTeachers, invalidateOverview, invalidateDashboardCache } from "../../shared/memoryCache";
 
 const groupSearchableFields = ["name", "session"];
 

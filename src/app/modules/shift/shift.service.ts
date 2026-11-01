@@ -7,6 +7,7 @@ import httpStatus from 'http-status';
 import { paginationHelper } from '../../helper/paginationHelper';
 import { shiftSearchableFields, shiftSortableFields } from './shift.constant';
 import { IShiftFilterRequest, TShiftCreate, TShiftUpdate } from './shift.interface';
+import { memoryCache, TTL, cacheKey, invalidateMasterData, invalidateNotices, invalidateEvents, invalidateRoutines, invalidateStudents, invalidateTeachers, invalidateOverview, invalidateDashboardCache } from "../../shared/memoryCache";
 
 // ─── Reusable include ────────────────────────────────────────────────────────
 const shiftInclude = {

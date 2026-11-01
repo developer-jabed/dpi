@@ -7,6 +7,7 @@ import httpStatus from 'http-status';
 import { paginationHelper } from '../../helper/paginationHelper';
 import { departmentSearchableFields, departmentSortableFields } from './department.constant';
 import { IDepartmentFilterRequest, TDepartmentCreate, TDepartmentUpdate } from './department.interface';
+import { memoryCache, TTL, cacheKey, invalidateMasterData, invalidateNotices, invalidateEvents, invalidateRoutines, invalidateStudents, invalidateTeachers, invalidateOverview, invalidateDashboardCache } from "../../shared/memoryCache";
 
 // ─── Reusable include ────────────────────────────────────────────────────────
 const departmentInclude = {

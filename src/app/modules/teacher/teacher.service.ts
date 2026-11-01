@@ -1,6 +1,7 @@
 import { Teacher } from '@prisma/client';
 import { paginationHelper } from '../../helper/paginationHelper';
 import { prisma } from '../../shared/prisma';
+import { memoryCache, TTL, cacheKey, invalidateMasterData, invalidateNotices, invalidateEvents, invalidateRoutines, invalidateStudents, invalidateTeachers, invalidateOverview, invalidateDashboardCache } from "../../shared/memoryCache";
 
 const getAllTeachers = async (params: any, options: any) => {
   const { page, limit, skip, sortBy, sortOrder } =

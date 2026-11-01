@@ -4,12 +4,7 @@ import ApiError from "../../errors/api.error";
 import httpStatus from "http-status";
 import { IPaginationOptions } from "../../interfaces/pagination";
 import { paginationHelper } from "../../helper/paginationHelper";
-import {
-  ICreateEvent,
-  IEventFilterRequest,
-  IUpdateEvent,
-} from "./event.interface";
-import { eventSearchableFields } from "./event.constant";
+
 
 const createEvent = async (payload: ICreateEvent): Promise<Event> => {
   const event = await prisma.event.create({
@@ -30,6 +25,8 @@ const createEvent = async (payload: ICreateEvent): Promise<Event> => {
 
   return event;
 };
+import { ICreateEvent, IEventFilterRequest, IUpdateEvent } from "./event.interface";
+import { eventSearchableFields } from "./event.constant";
 
 const getAllEvents = async (
   filters: IEventFilterRequest,

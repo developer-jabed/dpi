@@ -3,15 +3,9 @@ import { Prisma } from '@prisma/client';
 import ApiError from '../../errors/api.error';
 import httpStatus from 'http-status';
 import { paginationHelper } from '../../helper/paginationHelper';
-import {
-  subjectSearchableFields,
-  subjectSortableFields,
-} from './subject.constant';
-import {
-  ISubjectFilterRequest,
-  TSubjectCreate,
-  TSubjectUpdate,
-} from './subject.interface';
+import { ISubjectFilterRequest, TSubjectCreate, TSubjectUpdate } from './subject.interface';
+import { subjectSearchableFields, subjectSortableFields } from './subject.constant';
+
 
 const subjectInclude = {
   semester: true,

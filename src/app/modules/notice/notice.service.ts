@@ -5,12 +5,7 @@ import { prisma } from "../../shared/prisma";
 import ApiError from "../../errors/api.error";
 import { paginationHelper } from "../../helper/paginationHelper";
 import { noticeSearchableFields } from "./notice.constant";
-import {
-  INoticeFilterRequest,
-  IViewerContext,
-  TNoticeCreate,
-  TNoticeUpdate,
-} from "./notice.interface";
+import { INoticeFilterRequest, IViewerContext, TNoticeCreate, TNoticeUpdate } from "./notice.interface";
 
 // ─────────────────────────────────────────────────────────────
 // Shared include

@@ -2,6 +2,7 @@ import { prisma } from "../../shared/prisma";
 import { Request } from "express";
 import httpStatus from "http-status";
 import ApiError from "../../errors/api.error";
+import { memoryCache, TTL, cacheKey, invalidateMasterData, invalidateNotices, invalidateEvents, invalidateRoutines, invalidateStudents, invalidateTeachers, invalidateOverview, invalidateDashboardCache } from "../../shared/memoryCache";
 
 const createSemester = async (req: Request) => {
   const { name, order } = req.body;

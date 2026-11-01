@@ -1,6 +1,8 @@
+
 import { prisma } from "../../shared/prisma";
 import ApiError from "../../errors/api.error";
 import httpStatus from "http-status";
+import { cacheKey, invalidateDashboardCache, memoryCache, TTL } from "../../shared/memoryCache";
 
 
 type GroupByStatusRow = {
@@ -81,7 +83,7 @@ const getLastMonthRange = () => {
 // Admin Dashboard
 // ─────────────────────────────────────────────────────────────
 
-export const getAdminDashboard = async () => {
+const _getAdminDashboard = async () => {
   const months = getLast12Months();
   const { start: lastMonthStart, end: lastMonthEnd } = getLastMonthRange();
 
@@ -569,7 +571,7 @@ export const getAdminDashboard = async () => {
 // Teacher Dashboard
 // ─────────────────────────────────────────────────────────────
 
-export const getTeacherDashboard = async (userId: number) => {
+const _getTeacherDashboard = async (userId: number) => {
   const teacher = await prisma.teacher.findUnique({
     where: { userId, isDeleted: false },
     select: { id: true, departmentId: true },
@@ -746,7 +748,7 @@ export const getTeacherDashboard = async (userId: number) => {
 // Uses the helpers already in that file: prisma, ApiError, httpStatus,
 // groupByStatus, countByStatus, getLast12Months, gCount.
 
-export const getStudentDashboard = async (userId: number) => {
+const _getStudentDashboard = async (userId: number) => {
   const student = await prisma.student.findUnique({
     where: { userId, isDeleted: false },
     select: {
@@ -950,8 +952,45 @@ export const getStudentDashboard = async (userId: number) => {
   };
 };
 
+
+// ─────────────────────────────────────────────────────────────
+// Cached public API (in-memory — free-tier friendly)
+// ─────────────────────────────────────────────────────────────
+
+export const getAdminDashboard = async () => {
+  const key = cacheKey.adminDashboard();
+  const cached = memoryCache.get(key);
+  if (cached) return cached;
+
+  const data = await _getAdminDashboard();
+  memoryCache.set(key, data, TTL.adminDashboard);
+  return data;
+};
+
+export const getTeacherDashboard = async (userId: number) => {
+  const key = cacheKey.teacherDashboard(userId);
+  const cached = memoryCache.get(key);
+  if (cached) return cached;
+
+  const data = await _getTeacherDashboard(userId);
+  memoryCache.set(key, data, TTL.teacherDashboard);
+  return data;
+};
+
+export const getStudentDashboard = async (userId: number) => {
+  const key = cacheKey.studentDashboard(userId);
+  const cached = memoryCache.get(key);
+  if (cached) return cached;
+
+  const data = await _getStudentDashboard(userId);
+  memoryCache.set(key, data, TTL.studentDashboard);
+  return data;
+};
+
 export const dashboardService = {
   getAdminDashboard,
   getTeacherDashboard,
   getStudentDashboard,
+  /** Call after mutations that affect dashboards */
+  invalidateDashboardCache,
 };

@@ -2,6 +2,7 @@ import { prisma } from "../../shared/prisma";
 import ApiError from "../../errors/api.error";
 import httpStatus from "http-status";
 import { ICreateRoutine, IRoutineFilterRequest } from "./routine.interface";
+import { memoryCache, TTL, cacheKey, invalidateMasterData, invalidateNotices, invalidateEvents, invalidateRoutines, invalidateStudents, invalidateTeachers, invalidateOverview, invalidateDashboardCache } from "../../shared/memoryCache";
 
 const routineInclude = {
   subjectGroup: {
