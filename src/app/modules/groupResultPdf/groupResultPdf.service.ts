@@ -15,6 +15,22 @@ interface ResolvedSubject {
   type: SubjectResultType;
 }
 
+// ── DEBUGGING ─────────────────────────────────────────────────
+// Set PDF_DEBUG=false to disable detailed logs in production.
+const PDF_DEBUG = process.env.PDF_DEBUG !== "false";
+
+function pdfDebug(stage: string, data?: unknown): void {
+  if (!PDF_DEBUG) return;
+  const prefix = `[GROUP_RESULT_PDF][${stage}]`;
+  if (data === undefined) console.log(prefix);
+  else console.log(prefix, JSON.stringify(data, null, 2));
+}
+
+function pdfDebugError(stage: string, error: unknown): void {
+  if (!PDF_DEBUG) return;
+  console.error(`[GROUP_RESULT_PDF][${stage}]`, error);
+}
+
 // ── HELPERS ──────────────────────────────────────────────────
 function statusBadge(status: string): string {
   const styles: Record<string, string> = {
@@ -27,7 +43,7 @@ function statusBadge(status: string): string {
   return `<span style="display:inline-block;padding:2px 8px;border-radius:10px;font-size:8px;font-weight:700;${styles[status] ?? ""}">${label}</span>`;
 }
 
-/** Chip now shows code + resolved subject name */
+/** Chip shows code + resolved subject name */
 function chip(subject: ResolvedSubject): string {
   const fail = subject.type === "FAILED";
   const bg = fail ? "#fee2e2" : "#fef3c7";
@@ -39,7 +55,7 @@ function chip(subject: ResolvedSubject): string {
   </span>`;
 }
 
-/** Your rule: 0 → PASSED, 1-3 → REFERRED, 4+ → FAILED */
+/** Rule: 0 → PASSED, 1-3 → REFERRED, 4+ → FAILED */
 function computeStatus(
   referred: unknown[],
   failed: unknown[]
@@ -71,6 +87,15 @@ function currentSemesterGpa(
   return `<span style="font-weight:700;color:${color}">${Number(val).toFixed(2)}</span>`;
 }
 
+/** "5" -> ["5", "5th", ...] — all the ways a semester name may be stored in DiplomaResult.semesterName */
+function semesterNameVariants(name: string, order: number): string[] {
+  const suffix =
+    order === 1 ? "st" : order === 2 ? "nd" : order === 3 ? "rd" : "th";
+  return Array.from(
+    new Set([name, String(order), `${order}${suffix}`, `${order}th`])
+  );
+}
+
 // ── HTML BUILDER ─────────────────────────────────────────────
 function buildDiplomaReportHtml(params: {
   group: {
@@ -94,13 +119,12 @@ function buildDiplomaReportHtml(params: {
     gpa6: number | null;
     gpa7: number | null;
     student: { name: string } | null;
-    // Only subjects that belong to the target (running) semester
+    // Only subjects that belong to the target (report) semester
     subjectBreakdown: ResolvedSubject[];
   }>;
 }): string {
   const { group, results } = params;
 
-  // Recalculate status with your rule, based ONLY on the filtered (running-semester) breakdown
   const normalized = results.map((r) => {
     const referred = r.subjectBreakdown.filter((s) => s.type === "REFERRED");
     const failed = r.subjectBreakdown.filter((s) => s.type === "FAILED");
@@ -359,6 +383,14 @@ async function launchBrowser(): Promise<Browser> {
 
 // ── MAIN FUNCTION ────────────────────────────────────────────
 const generateDiplomaReportPdf = async (groupId: number) => {
+  const startedAt = Date.now();
+
+  pdfDebug("START", { groupId, nodeEnv: process.env.NODE_ENV });
+
+  if (!Number.isInteger(groupId) || groupId <= 0) {
+    throw new ApiError(httpStatus.BAD_REQUEST, "A valid positive group ID is required");
+  }
+
   // 1. Load group + current semester
   const group = await prisma.group.findUnique({
     where: { id: groupId },
@@ -377,9 +409,7 @@ const generateDiplomaReportPdf = async (groupId: number) => {
     throw new ApiError(httpStatus.BAD_REQUEST, "Group has no current semester set");
   }
 
-  // 2. Find the PREVIOUS semester (current order - 1)
-  //    Group in 5th → show 4th
-  //    Group in 6th → show 5th
+  // 2. Report semester = previous semester (current order - 1)
   const previousOrder = group.currentSemester.order - 1;
 
   if (previousOrder < 1) {
@@ -390,10 +420,7 @@ const generateDiplomaReportPdf = async (groupId: number) => {
   }
 
   const previousSemester = await prisma.semester.findFirst({
-    where: {
-      order: previousOrder,
-      isDeleted: false,
-    },
+    where: { order: previousOrder, isDeleted: false },
   });
 
   if (!previousSemester) {
@@ -403,38 +430,77 @@ const generateDiplomaReportPdf = async (groupId: number) => {
     );
   }
 
-  console.log(
-    `[generateDiplomaReportPdf] Group is in ${group.currentSemester.name} → showing results of ${previousSemester.name}`
-  );
-
-  // 3. Query results of the PREVIOUS semester
-  const where: Prisma.DiplomaResultWhereInput = {
+  pdfDebug("TARGET_SEMESTER", {
     groupId: group.id,
-    isDeleted: false,
-    OR: [
-      // Match by foreign key
-      { semesterId: previousSemester.id },
+    groupCurrentSemester: group.currentSemester.name,
+    reportSemester: previousSemester.name,
+    reportSemesterId: previousSemester.id,
+  });
 
-      // Fallback when semesterId is null
+  // 3. Resolve the students who CURRENTLY belong to this group.
+  //    DiplomaResult.groupId is historical (the group the student was in when the
+  //    result was created). After promoteBatch the students move to a new group,
+  //    but their old results keep the old groupId — so we must find results
+  //    through the students (id + roll), not only through DiplomaResult.groupId.
+  const groupStudents = await prisma.student.findMany({
+    where: { groupId: group.id, isDeleted: false },
+    select: { id: true, roll: true },
+  });
+
+  const studentIds = groupStudents.map((s) => s.id);
+  const rolls = groupStudents.map((s) => s.roll);
+
+  pdfDebug("GROUP_STUDENTS", {
+    groupId: group.id,
+    studentCount: groupStudents.length,
+  });
+
+  // 4. Build the where clause
+  const semesterMatch: Prisma.DiplomaResultWhereInput = {
+    OR: [
+      { semesterId: previousSemester.id },
       {
+        // Fallback for legacy rows where semesterId was never linked
         semesterId: null,
-        OR: [
-          { semesterName: previousSemester.name },
-          { semesterName: String(previousOrder) },
-          { semesterName: `${previousOrder}th` },
-          { semesterName: `${previousOrder}st` },
-          { semesterName: `${previousOrder}nd` },
-          { semesterName: `${previousOrder}rd` },
-          {
-            semesterName: {
-              contains: String(previousOrder),
-              mode: "insensitive",
-            },
-          },
-        ],
+        semesterName: {
+          in: semesterNameVariants(previousSemester.name, previousOrder),
+        },
       },
     ],
   };
+
+  const ownerMatch: Prisma.DiplomaResultWhereInput = {
+    OR: [
+      { groupId: group.id }, // results created while the group was in this semester
+      ...(studentIds.length > 0
+        ? [
+            { studentId: { in: studentIds } }, // linked to students now in this group
+            { roll: { in: rolls } }, // fallback: unlinked rows matched by roll
+          ]
+        : []),
+    ],
+  };
+
+  const where: Prisma.DiplomaResultWhereInput = {
+    isDeleted: false,
+    AND: [semesterMatch, ownerMatch],
+  };
+
+  // Diagnostics use the SAME filters as the real query
+  const [ownerOnlyCount, semesterOnlyCount, finalCount] = await Promise.all([
+    prisma.diplomaResult.count({ where: { isDeleted: false, ...ownerMatch } }),
+    prisma.diplomaResult.count({ where: { isDeleted: false, ...semesterMatch } }),
+    prisma.diplomaResult.count({ where }),
+  ]);
+
+  pdfDebug("DATABASE_COUNTS", {
+    groupId: group.id,
+    previousSemesterId: previousSemester.id,
+    previousSemesterName: previousSemester.name,
+    resultsForThisGroupAnySemester: ownerOnlyCount,
+    resultsForTargetSemesterAnyGroup: semesterOnlyCount,
+    resultsMatchingBoth: finalCount,
+  });
 
   const rawResults = await prisma.diplomaResult.findMany({
     where,
@@ -448,40 +514,80 @@ const generateDiplomaReportPdf = async (groupId: number) => {
             select: {
               code: true,
               name: true,
-              // ← we now also fetch semester id so we can filter strictly
               semester: { select: { id: true, name: true } },
             },
           },
         },
       },
     },
-    orderBy: { roll: "asc" },
+    orderBy: [{ roll: "asc" }, { examYear: "desc" }],
   });
 
-  // 4. Flatten + FILTER: keep ONLY subjects that belong to the target (previous) semester.
+  // A student can have several results for the same semester (retakes / re-exams).
+  // Keep only the latest examYear per roll (rows are already sorted examYear desc).
+  const seenRolls = new Set<string>();
+  const latestPerRoll = rawResults.filter((r) => {
+    if (seenRolls.has(r.roll)) return false;
+    seenRolls.add(r.roll);
+    return true;
+  });
+
+  pdfDebug("RAW_RESULTS", {
+    fetched: rawResults.length,
+    afterDedupe: latestPerRoll.length,
+  });
+
+  if (latestPerRoll.length === 0) {
+    // Return a real error instead of a "successful" empty PDF
+    throw new ApiError(
+      httpStatus.NOT_FOUND,
+      `No results found for group ${group.name}, semester ${previousSemester.name}`
+    );
+  }
+
+  // 5. Keep ONLY subjects that belong to the target semester.
   //    Orphan codes (subject = null) are dropped because we cannot verify the semester.
-  const results = rawResults.map((r) => ({
-    ...r,
-    subjectBreakdown: r.subjectBreakdown
-      .filter((row) => {
-        // Must have a linked Subject and that Subject must belong to the running/target semester
-        return row.subject?.semester?.id === previousSemester.id;
-      })
-      .map(
+  let totalSubjectRows = 0;
+  let matchedSubjectRows = 0;
+  let missingSubjectRelations = 0;
+  let wrongSemesterSubjectRows = 0;
+
+  const results = latestPerRoll.map((r) => {
+    totalSubjectRows += r.subjectBreakdown.length;
+
+    const filteredSubjects = r.subjectBreakdown.filter((row) => {
+      if (!row.subject || !row.subject.semester) {
+        missingSubjectRelations++;
+        return false;
+      }
+      const matches = row.subject.semester.id === previousSemester.id;
+      if (matches) matchedSubjectRows++;
+      else wrongSemesterSubjectRows++;
+      return matches;
+    });
+
+    return {
+      ...r,
+      subjectBreakdown: filteredSubjects.map(
         (row): ResolvedSubject => ({
-          code: row.subject!.code, // safe because of the filter above
+          code: row.subject!.code,
           name: row.subject!.name,
           semesterName: row.subject!.semester?.name ?? null,
           type: row.type,
         })
       ),
-  }));
+    };
+  });
 
-  console.log(
-    `[generateDiplomaReportPdf] Found ${results.length} results for ${previousSemester.name} semester (subjects filtered to that semester only)`
-  );
+  pdfDebug("SUBJECT_FILTER_SUMMARY", {
+    studentResultCount: results.length,
+    totalSubjectRows,
+    matchedSubjectRows,
+    missingSubjectRelations,
+    wrongSemesterSubjectRows,
+  });
 
-  // 5. Build HTML (pass previous semester so PDF shows correct name)
+  // 6. Build HTML (pass previous semester so the PDF shows the correct name)
   const html = buildDiplomaReportHtml({
     group: {
       ...group,
@@ -493,7 +599,7 @@ const generateDiplomaReportPdf = async (groupId: number) => {
     results,
   });
 
-  // 6. Generate PDF
+  // 7. Generate PDF
   let browser: Browser | undefined;
   try {
     browser = await Promise.race([
@@ -505,6 +611,8 @@ const generateDiplomaReportPdf = async (groupId: number) => {
 
     const page = await browser.newPage();
 
+    page.on("pageerror", (error) => pdfDebugError("CHROME_PAGE_ERROR", error));
+
     await page.setRequestInterception(true);
     page.on("request", (req) => {
       if (["image", "media", "font"].includes(req.resourceType())) {
@@ -515,7 +623,6 @@ const generateDiplomaReportPdf = async (groupId: number) => {
     });
 
     await page.setContent(html, { waitUntil: "load", timeout: 15000 });
-    await new Promise((resolve) => setTimeout(resolve, 300));
 
     const rawPdfBytes = await page.pdf({
       format: "A4",
@@ -523,6 +630,10 @@ const generateDiplomaReportPdf = async (groupId: number) => {
       margin: { top: "15mm", right: "14mm", bottom: "20mm", left: "14mm" },
       preferCSSPageSize: true,
     });
+
+    if (!rawPdfBytes.byteLength) {
+      throw new Error("Puppeteer generated an empty PDF buffer");
+    }
 
     const pdfDoc = await PDFDocument.load(rawPdfBytes);
     pdfDoc.setTitle(`Diploma Result Report - Group ${group.name}`);
@@ -532,18 +643,37 @@ const generateDiplomaReportPdf = async (groupId: number) => {
 
     const finalPdfBytes = await pdfDoc.save();
 
+    const pdfSignature = Buffer.from(finalPdfBytes).subarray(0, 5).toString("ascii");
+    if (!finalPdfBytes.length || pdfSignature !== "%PDF-") {
+      throw new Error(`Invalid PDF output (signature: ${pdfSignature})`);
+    }
+
     const semLabel = previousSemester.name.replace(/\s+/g, "-");
     const filename = `DPI-CST-Group${group.name}-${semLabel}-${group.session}.pdf`;
+    const pdfBuffer = Buffer.from(finalPdfBytes);
 
-    return { pdfBuffer: Buffer.from(finalPdfBytes), filename };
+    pdfDebug("SUCCESS", {
+      groupId: group.id,
+      reportSemester: previousSemester.name,
+      resultCount: results.length,
+      filename,
+      pdfBytes: pdfBuffer.length,
+      durationMs: Date.now() - startedAt,
+    });
+
+    return { pdfBuffer, filename };
   } catch (err) {
-    console.error("[generateDiplomaReportPdf]", err);
+    pdfDebugError("GENERATION_FAILED", err);
     throw new ApiError(
       httpStatus.INTERNAL_SERVER_ERROR,
       err instanceof Error ? err.message : "PDF generation failed"
     );
   } finally {
-    if (browser) await browser.close().catch(() => {});
+    if (browser) {
+      await browser.close().catch((closeError) => {
+        pdfDebugError("BROWSER_CLOSE_FAILED", closeError);
+      });
+    }
   }
 };
 
